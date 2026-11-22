@@ -30,17 +30,17 @@
   </header>
 
   <!--
-    CAMBIÁ el valor de src por tu propio modelo, por ejemplo: src="mi-obra.glb"
-    (subí el archivo .glb al mismo lugar que este index.html).
-    Ahora usa un astronauta de ejemplo para probar que todo funciona.
+    src="toro.glb": subí ese archivo al mismo lugar que este index.html.
+    ar-scale="fixed": mantiene el tamaño real (el toro mide 5 m de largo)
+    y evita que la persona lo achique o agrande con los dedos.
   -->
   <model-viewer
-      src="https://modelviewer.dev/shared-assets/models/Astronaut.glb"
-      alt="Pieza de realidad aumentada"
+      src="toro.glb"
+      alt="Toro monumental azul y blanco, 5 metros"
       ar
       ar-modes="webxr scene-viewer quick-look"
       ar-placement="floor"
-      ar-scale="auto"
+      ar-scale="fixed"
       camera-controls
       touch-action="pan-y"
       autoplay

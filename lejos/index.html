@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prueba AR</title>
+
+  <!-- Visor 3D/AR de Google (gratuito, código abierto) -->
+  <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>
+
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0d10; color: #e8e8e8;
+                 font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { height: 100%; display: flex; flex-direction: column; }
+    header { padding: 18px 20px 6px; }
+    h1 { margin: 0; font-size: 1.05rem; font-weight: 500; letter-spacing: .04em; }
+    p.sub { margin: 4px 0 0; font-size: .85rem; opacity: .6; }
+    model-viewer { flex: 1; width: 100%; --poster-color: transparent; background: transparent; }
+    .ar-btn { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%);
+              background: #fff; color: #111; border: 0; border-radius: 999px;
+              padding: 14px 26px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    footer { padding: 10px 20px 18px; font-size: .75rem; opacity: .45; text-align: center; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>NOMBRE DE LA OBRA</h1>
+    <p class="sub">Tocá el botón y apuntá el celular al suelo o a un espacio abierto.</p>
+  </header>
+
+  <!--
+    src="toro.glb": subí ese archivo al mismo lugar que este index.html.
+    ar-scale="fixed": mantiene el tamaño real (el toro mide 5 m de largo)
+    y evita que la persona lo achique o agrande con los dedos.
+  -->
+  <model-viewer
+      src="toro.glb"
+      alt="Toro monumental azul y blanco, 5 metros"
+      ar
+      ar-modes="webxr scene-viewer quick-look"
+      ar-placement="floor"
+      ar-scale="fixed"
+      camera-controls
+      touch-action="pan-y"
+      autoplay
+      shadow-intensity="1"
+      exposure="1">
+    <button slot="ar-button" class="ar-btn">Ver en mi espacio</button>
+  </model-viewer>
+
+  <footer>Experimento de arte digital · por Zibe</footer>
+</main>
+</body>
+</html>

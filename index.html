@@ -1,55 +1,99 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Prueba AR</title>
-
-  <!-- Visor 3D/AR de Google (gratuito, código abierto) -->
-  <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>
-
-  <style>
-    html, body { margin: 0; height: 100%; background: #0b0d10; color: #e8e8e8;
-                 font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-    main { height: 100%; display: flex; flex-direction: column; }
-    header { padding: 18px 20px 6px; }
-    h1 { margin: 0; font-size: 1.05rem; font-weight: 500; letter-spacing: .04em; }
-    p.sub { margin: 4px 0 0; font-size: .85rem; opacity: .6; }
-    model-viewer { flex: 1; width: 100%; --poster-color: transparent; background: transparent; }
-    .ar-btn { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%);
-              background: #fff; color: #111; border: 0; border-radius: 999px;
-              padding: 14px 26px; font-size: 1rem; font-weight: 600; cursor: pointer; }
-    footer { padding: 10px 20px 18px; font-size: .75rem; opacity: .45; text-align: center; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>IMAGEN · PRUEBA</title>
+<script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe-v1.5.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/aframe-extras@7.2.0/dist/aframe-extras.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+<style>
+  html,body{margin:0;height:100%;color:#eee;font-family:system-ui,sans-serif;overflow:hidden}
+  #contenedor{position:absolute;inset:0;width:100%;height:100%;overflow:hidden}
+  #estado{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;padding:24px;z-index:10;background:#0b0b0d;transition:opacity .4s}
+  #estado h1{font-size:14px;letter-spacing:.2em;font-weight:500;margin:0 0 12px}
+  #estado p{font-size:14px;opacity:.7;max-width:320px;line-height:1.5;margin:0}
+  #aviso{position:fixed;left:0;right:0;bottom:24px;text-align:center;font-size:13px;opacity:.85;z-index:5;
+    text-shadow:0 1px 4px #000;pointer-events:none}
+</style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>NOMBRE DE LA OBRA</h1>
-    <p class="sub">Tocá el botón y apuntá el celular al suelo o a un espacio abierto.</p>
-  </header>
+<div id="contenedor"></div>
+<div id="estado"><h1>IMAGEN · PRUEBA</h1><p id="msg">Preparando la imagen de referencia…</p></div>
+<div id="aviso"></div>
 
-  <!--
-    src="toro.glb": subí ese archivo al mismo lugar que este index.html.
-    ar-scale="fixed": mantiene el tamaño real (el toro mide 5 m de largo)
-    y evita que la persona lo achique o agrande con los dedos.
-  -->
-  <model-viewer
-      src="toro.glb"
-      alt="Toro monumental azul y blanco, 5 metros"
-      ar
-      ar-modes="webxr scene-viewer quick-look"
-      ar-placement="floor"
-      ar-scale="fixed"
-      camera-controls
-      touch-action="pan-y"
-      autoplay
-      shadow-intensity="1"
-      exposure="1">
-    <button slot="ar-button" class="ar-btn">Ver en mi espacio</button>
-  </model-viewer>
+<script>
+const msg = document.getElementById('msg');
+const aviso = document.getElementById('aviso');
 
-  <footer>Experimento de arte digital · por Zibe</footer>
-</main>
+// Redimensiona la foto para que el compilado sea rápido en el celular
+function cargarImagen(url, maxAncho){
+  return new Promise((ok, err) => {
+    const im = new Image();
+    im.onload = () => {
+      const esc = Math.min(1, maxAncho / im.naturalWidth);
+      const c = document.createElement('canvas');
+      c.width = Math.round(im.naturalWidth * esc);
+      c.height = Math.round(im.naturalHeight * esc);
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+      const im2 = new Image();
+      im2.onload = () => ok(im2);
+      im2.src = c.toDataURL('image/jpeg', 0.92);
+    };
+    im.onerror = () => err(new Error('No encuentro portada.jpg en esta carpeta'));
+    im.src = url;
+  });
+}
+
+async function iniciar(){
+  try{
+    msg.textContent = 'Leyendo portada.jpg…';
+    const img = await cargarImagen('portada.jpg', 800);
+
+    msg.textContent = 'Analizando la imagen… (puede tardar unos segundos)';
+    const compiler = new MINDAR.IMAGE.Compiler();
+    await compiler.compileImageTargets([img], p => {
+      msg.textContent = 'Analizando la imagen… ' + Math.round(p) + '%';
+    });
+    const buffer = await compiler.exportData();
+    const mindUrl = URL.createObjectURL(new Blob([buffer]));
+
+    // Alto del target en unidades (el ancho siempre vale 1)
+    const alto = (img.naturalHeight / img.naturalWidth).toFixed(3);
+
+    document.getElementById('contenedor').insertAdjacentHTML('beforeend', `
+      <a-scene mindar-image="imageTargetSrc: ${mindUrl}; uiLoading: no; uiScanning: no; filterMinCF: 0.0001; filterBeta: 0.001"
+               color-space="sRGB" renderer="colorManagement: true, physicallyCorrectLights"
+               vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
+        <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+        <a-entity id="objetivo" mindar-image-target="targetIndex: 0">
+          <!-- marco de control: borde verde del tamaño de la imagen -->
+          <a-plane width="1" height="${alto}" color="#00ff88" opacity="0.15"></a-plane>
+          <!-- personajes parados sobre la imagen -->
+          <a-gltf-model src="escena.glb" rotation="90 0 0" scale="0.07 0.07 0.07" animation-mixer></a-gltf-model>
+        </a-entity>
+      </a-scene>`);
+
+    const objetivo = document.getElementById('objetivo');
+    objetivo.addEventListener('targetFound', () => { aviso.textContent = ''; });
+    objetivo.addEventListener('targetLost',  () => { aviso.textContent = 'Apuntá de nuevo a la portada'; });
+
+    const escena = document.querySelector('a-scene');
+    escena.addEventListener('arReady', () => {
+      document.getElementById('estado').style.opacity = 0;
+      setTimeout(() => document.getElementById('estado').remove(), 500);
+      aviso.textContent = 'Apuntá la cámara a la portada';
+    });
+    escena.addEventListener('arError', () => {
+      msg.textContent = 'No pude abrir la cámara. Abrí el link desde Safari (iPhone) o Chrome (Android).';
+      document.getElementById('estado').style.opacity = 1;
+    });
+  }catch(e){
+    msg.textContent = 'Error: ' + e.message;
+  }
+}
+iniciar();
+</script>
 </body>
 </html>

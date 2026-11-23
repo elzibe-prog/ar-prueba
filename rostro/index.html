@@ -14,6 +14,7 @@
 </style>
 </head>
 <body>
+<div id="diag" style="position:fixed;left:0;right:0;top:12px;text-align:center;z-index:5;font-size:14px;text-shadow:0 1px 4px #000;pointer-events:none">Buscando cara…</div>
 <div id="cargando">ROSTRO · PRUEBA<br><br>Abriendo cámara frontal…</div>
 
 <div id="contenedor">
@@ -53,6 +54,9 @@
     <a-cone position="0 -0.1 0" radius-bottom="0.08" radius-top="0.0" height="0.25" rotation="180 0 0" color="#ff9f0a"></a-cone>
   </a-entity>
 
+  <!-- CONTROL: cubo fijo frente a la cámara (si lo ves, el render anda) -->
+  <a-box position="0 -0.9 -3" scale="0.4 0.4 0.4" color="#ffd60a" animation="property: rotation; to: 0 360 0; dur: 3000; easing: linear; loop: true"></a-box>
+
   <a-light type="ambient" intensity="1.1"></a-light>
   <a-light type="directional" position="0 1 1" intensity="0.8"></a-light>
 </a-scene>
@@ -63,6 +67,9 @@
     const c = document.getElementById('cargando');
     c.style.opacity = 0; setTimeout(() => c.remove(), 500);
   });
+  const sc = document.querySelector('a-scene');
+  sc.addEventListener('targetFound', () => { document.getElementById('diag').textContent = 'Cara detectada ✓'; });
+  sc.addEventListener('targetLost',  () => { document.getElementById('diag').textContent = 'Buscando cara…'; });
   document.querySelector('a-scene').addEventListener('arError', () => {
     document.getElementById('cargando').innerHTML =
       'No pude abrir la cámara.<br><br>Abrí el link desde Safari (iPhone) o Chrome (Android).';

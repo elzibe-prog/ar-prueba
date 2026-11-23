@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>MANOS · PRUEBA</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;font-family:system-ui,sans-serif;color:#fff;
+    background:#1b1340;touch-action:none;-webkit-user-select:none;user-select:none}
+  canvas#c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #inicio{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;padding:24px;background:#120d2e}
+  #inicio h1{font-size:14px;letter-spacing:.25em;font-weight:500;margin:0 0 14px}
+  #inicio p{font-size:14px;opacity:.7;max-width:330px;line-height:1.55;margin:0 0 26px}
+  #btn{font-size:15px;padding:14px 30px;border-radius:999px;border:1.5px solid #fff;background:transparent;color:#fff;letter-spacing:.08em}
+  #estado{margin-top:18px;font-size:12px;opacity:.6;min-height:16px}
+  #hud{position:fixed;left:12px;bottom:10px;z-index:5;font-size:11px;opacity:.75;pointer-events:none;
+    text-shadow:0 1px 3px #000;white-space:pre;display:none}
+  #ojo{position:fixed;right:10px;top:10px;z-index:6;width:38px;height:38px;border-radius:50%;
+    border:1px solid #fff8;background:#0004;color:#fff;font-size:16px;display:none}
+  #prev{position:fixed;right:10px;top:56px;z-index:5;width:150px;border-radius:8px;transform:scaleX(-1);
+    opacity:.85;display:none}
+</style>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="prev" playsinline muted></video>
+<button id="ojo" title="ver cámara / datos">👁</button>
+<div id="hud"></div>
+<div id="inicio">
+  <h1>MANOS · PRUEBA</h1>
+  <p>Los personajes reaccionan a tu mano y a tu movimiento.<br>Mano abierta: se acercan y miran.<br>Puño: se juntan alrededor.<br>Movete delante de ellos: saltan.<br><br>La cámara solo se usa para leer el movimiento. No se muestra ni se guarda nada.</p>
+  <button id="btn">EMPEZAR</button>
+  <div id="estado"></div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+const $ = id => document.getElementById(id);
+const canvas = $('c'), video = $('prev'), hud = $('hud'), estado = $('estado');
+
+/* ============ ESCENA ============ */
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+camera.position.set(0, 0, 12);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x554488, 1.5));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(3, 6, 8); scene.add(sun);
+
+let visW = 10, visH = 10;
+function resize(){
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  visH = 2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  visW = visH * camera.aspect;
+  layout();
+}
+addEventListener('resize', resize);
+
+/* ============ PERSONAJES ============ */
+const mat = c => new THREE.MeshStandardMaterial({color:c, roughness:.85, metalness:0});
+function eyes(g, y, z, sep, size){
+  const out = [];
+  for (const s of [-1, 1]){
+    const eg = new THREE.Group(); eg.position.set(s * sep, y, z);
+    const w = new THREE.Mesh(new THREE.SphereGeometry(size, 20, 14), mat(0xffffff));
+    const p = new THREE.Mesh(new THREE.SphereGeometry(size * .5, 16, 12), mat(0x111111));
+    p.position.z = size * .78; eg.add(w); eg.add(p); g.add(eg); out.push({p, r:size * .38});
+  }
+  return out;
+}
+function add(g, geo, color, x=0, y=0, z=0){ const m = new THREE.Mesh(geo, mat(color)); m.position.set(x,y,z); g.add(m); return m; }
+
+const builders = [
+  g => { add(g, new THREE.SphereGeometry(.62, 28, 20), 0xff5a8a, 0,.62,0); return eyes(g,.72,.5,.2,.15); },
+  g => { add(g, new THREE.CylinderGeometry(.36,.4,1.9,24), 0x2ec4b6, 0,.95,0); return eyes(g,1.35,.3,.17,.13); },
+  g => { add(g, new THREE.BoxGeometry(1.1,1.1,1.1), 0xffbe0b, 0,.55,0); return eyes(g,.7,.56,.26,.17); },
+  g => { add(g, new THREE.ConeGeometry(.65,1.5,28), 0x8338ec, 0,.75,0); return eyes(g,.55,.4,.17,.14); },
+  g => { for(const [x,r,c] of [[-.55,.38,0x06d6a0],[0,.45,0x04b88a],[.55,.38,0x06d6a0]]) add(g,new THREE.SphereGeometry(r,22,16),c,x,r,0); return eyes(g,.55,.4,.15,.13); },
+  g => { add(g, new THREE.CapsuleGeometry(.4,.9,8,20), 0x3a86ff, 0,.85,0); return eyes(g,1.05,.36,.17,.14); },
+  g => { add(g,new THREE.CylinderGeometry(.28,.32,.8,20),0xf1e3d3,0,.4,0); const c=add(g,new THREE.SphereGeometry(.78,26,16),0xef476f,0,.85,0); c.scale.y=.65; return eyes(g,.45,.28,.14,.12); },
+  g => { add(g,new THREE.SphereGeometry(.58,26,18),0xff9f1c,0,.58,0); add(g,new THREE.ConeGeometry(.38,.7,22),0xff9f1c,0,1.3,0); return eyes(g,.7,.46,.2,.15); },
+  g => { add(g,new THREE.SphereGeometry(.72,28,20),0x5e60ce,0,.72,0); add(g,new THREE.ConeGeometry(.15,.4,12),0xffd60a,-.35,1.5,0); add(g,new THREE.ConeGeometry(.15,.4,12),0xffd60a,.35,1.5,0); add(g,new THREE.BoxGeometry(.5,.1,.1),0x1b1340,0,.4,.66); return eyes(g,.9,.55,.24,.17); },
+  g => { add(g,new THREE.SphereGeometry(.55,26,18),0xf15bb5,0,.55,0); add(g,new THREE.ConeGeometry(.4,.8,22),0x00bbf9,0,1.45,0); add(g,new THREE.SphereGeometry(.1,12,10),0xffffff,0,1.9,0); return eyes(g,.62,.44,.19,.14); },
+];
+// posición en pantalla (nx,ny entre -1 y 1), tamaño
+const spots = [
+  [-.78,-.45,1.0],[-.45,-.15,.9],[-.15,-.5,1.1],[.15,-.1,.9],[.45,-.5,1.0],[.78,-.15,1.0],
+  [-.62,.45,.8],[-.15,.4,.85],[.3,.5,.8],[.7,.45,.85],
+];
+const chars = builders.map((b, i) => {
+  const g = new THREE.Group(); scene.add(g);
+  const ey = b(g);
+  const shadow = new THREE.Mesh(new THREE.CircleGeometry(.6, 24), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:.22}));
+  shadow.rotation.x = -Math.PI/2; shadow.position.y = .01; scene.add(shadow);
+  return {g, ey, shadow, nx:spots[i][0], ny:spots[i][1], sc:spots[i][2], baseX:0, floorY:0,
+          xoff:0, vx:0, y:0, vy:0, e:0, cool:0, squash:0, phase:Math.random()*6.28};
+});
+function layout(){
+  for (const c of chars){
+    c.baseX = c.nx * visW * .46;
+    c.floorY = c.ny * visH * .42 - .5;
+    c.size = c.sc * Math.min(1, visW / 9) * 1.15;
+    c.g.scale.setScalar(c.size);
+    c.shadow.scale.setScalar(c.size);
+  }
+}
+
+/* ============ ENTRADAS: MOVIMIENTO + MANO ============ */
+const GW = 32, GH = 24;
+const small = document.createElement('canvas'); small.width = GW; small.height = GH;
+const sctx = small.getContext('2d', {willReadFrequently:true});
+let prevGray = null; const act = new Float32Array(GW * GH);
+let totalEnergy = 0, motionX = 0, motionY = 0, motionOn = false;
+let hands = [];         // [{x,y (mundo), fist}]
+let handLandmarker = null, usingCam = false;
+
+function motionStep(){
+  sctx.save(); sctx.scale(-1, 1);
+  sctx.drawImage(video, -GW, 0, GW, GH); sctx.restore();
+  const d = sctx.getImageData(0, 0, GW, GH).data;
+  const gray = new Float32Array(GW * GH);
+  for (let i = 0; i < gray.length; i++) gray[i] = (d[i*4] + d[i*4+1] + d[i*4+2]) / 765;
+  let sum = 0, sx = 0, sy = 0;
+  if (prevGray){
+    for (let i = 0; i < gray.length; i++){
+      const v = Math.abs(gray[i] - prevGray[i]) > 0.07 ? 1 : 0;
+      act[i] = Math.max(v, act[i] * 0.8);
+      sum += v; sx += v * (i % GW); sy += v * Math.floor(i / GW);
+    }
+  }
+  prevGray = gray;
+  totalEnergy = totalEnergy * .85 + (sum / gray.length) * .15 * 4;
+  motionOn = sum > 6;
+  if (motionOn){ motionX = (sx / sum / GW - .5) * visW; motionY = (.5 - sy / sum / GH) * visH; }
+}
+function cellAct(x, y){
+  const cx = Math.floor((x / visW + .5) * GW), cy = Math.floor((.5 - y / visH) * GH);
+  let s = 0, n = 0;
+  for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++){
+    const xx = cx + i, yy = cy + j;
+    if (xx < 0 || yy < 0 || xx >= GW || yy >= GH) continue;
+    s += act[yy * GW + xx]; n++;
+  }
+  return n ? s / n : 0;
+}
+const dist2 = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+function handStep(){
+  if (!handLandmarker || video.readyState < 2) return;
+  let r; try { r = handLandmarker.detectForVideo(video, performance.now()); } catch(e){ return; }
+  hands = (r.landmarks || []).map(lm => {
+    const tip = lm[8], palm = lm[9];
+    const tips = [8,12,16,20].reduce((a,i) => a + dist2(lm[i], lm[0]), 0);
+    const mcps = [5,9,13,17].reduce((a,i) => a + dist2(lm[i], lm[0]), 0);
+    const fist = tips < mcps * 1.25;
+    const px = (fist ? palm : tip);
+    return { x:((1 - px.x) - .5) * visW, y:(.5 - px.y) * visH, fist };
+  });
+}
+
+/* ============ LOOP ============ */
+let t = 0, last = performance.now(), frame = 0, fps = 0, fpsT = last;
+let wander = {x:0, y:0};
+function tick(now){
+  requestAnimationFrame(tick);
+  const dt = Math.min(.05, (now - last) / 1000); last = now; t += dt; frame++;
+  if (now - fpsT > 1000){ fps = frame; frame = 0; fpsT = now; }
+
+  if (usingCam && video.readyState >= 2){
+    if (frame % 2 === 0) motionStep();
+    handStep();
+  }
+  // mirada por defecto: punto que vaga
+  wander.x = Math.sin(t * .7) * visW * .35; wander.y = Math.cos(t * .5) * visH * .2;
+
+  for (const c of chars){
+    const cx = c.baseX + c.xoff, cy = c.floorY + c.y + .6 * c.size;
+    let target = wander, exc = 0, tx = c.baseX;
+    // mano
+    let near = null, nd = 1e9;
+    for (const h of hands){ const d = Math.hypot(h.x - cx, h.y - cy); if (d < nd){ nd = d; near = h; } }
+    if (near){
+      target = near;
+      const reach = Math.min(visW, visH) * .5;
+      if (nd < reach){
+        if (near.fist){ tx = c.baseX + (near.x - c.baseX) * .75; exc = Math.max(exc, .3); }
+        else { exc = Math.max(exc, 1 - nd / reach); tx = c.baseX + Math.sign(c.baseX - near.x || 1) * Math.max(0, 1.1 - nd * .35); }
+      }
+    } else if (motionOn){ target = {x:motionX, y:motionY}; }
+    // movimiento del cuerpo
+    exc = Math.max(exc, Math.min(1, cellAct(cx, cy) * 2.2));
+
+    c.e = Math.max(c.e - dt * 1.1, exc);
+    c.cool -= dt;
+    if (c.e > .45 && c.y <= 0.001 && c.cool <= 0){ c.vy = 4.5 + 4.5 * c.e; c.cool = .35 + Math.random() * .3; }
+    c.vy -= 16 * dt; c.y += c.vy * dt;
+    if (c.y < 0){ if (c.vy < -2) c.squash = Math.min(1, -c.vy / 9); c.y = 0; c.vy = 0; }
+    c.squash = Math.max(0, c.squash - dt * 4);
+
+    c.vx += (tx - c.baseX - c.xoff) * 30 * dt; c.vx *= .86; c.xoff += c.vx * dt * 6;
+    const breath = Math.sin(t * 2 + c.phase) * .03;
+    const idle = Math.abs(Math.sin(t * 1.6 + c.phase)) * .04 * c.size;
+    const stretch = 1 + Math.max(0, c.vy) * .02 - c.squash * .22 + breath;
+    c.g.scale.set(c.size / Math.sqrt(stretch), c.size * stretch, c.size / Math.sqrt(stretch));
+    c.g.position.set(c.baseX + c.xoff, c.floorY + c.y + idle, 0);
+    c.g.rotation.z = Math.sin(t * 9 + c.phase) * .18 * c.e + (c.vx * .01);
+    c.shadow.position.set(c.baseX + c.xoff, c.floorY, 0);
+    c.shadow.material.opacity = .25 * (1 - Math.min(.7, c.y / 3));
+
+    // ojos
+    const dx = target.x - cx, dy = target.y - cy, m = Math.hypot(dx, dy) || 1;
+    for (const e of c.ey){
+      const k = Math.min(1, m / 3);
+      e.p.position.x += ((dx / m) * k * e.r - e.p.position.x) * .25;
+      e.p.position.y += ((dy / m) * k * e.r - e.p.position.y) * .25;
+    }
+  }
+  // fondo
+  const hue = (260 + t * 4 + totalEnergy * 70) % 360;
+  document.body.style.background = `radial-gradient(circle at 50% 70%, hsl(${hue},55%,${30 + Math.min(20, totalEnergy*40)}%), hsl(${(hue+40)%360},60%,12%))`;
+
+  if (hud.style.display === 'block')
+    hud.textContent = `fps ${fps}\nmanos ${hands.length}${hands.length ? (hands[0].fist ? ' (puño)' : ' (abierta)') : ''}\nmovimiento ${totalEnergy.toFixed(2)}\n` + (handLandmarker ? 'detector de manos: ok' : 'detector de manos: no cargó (solo movimiento)');
+  renderer.render(scene, camera);
+}
+
+/* ============ ARRANQUE ============ */
+async function cargarManos(){
+  const vis = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+  const fs = await vis.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+  const base = { modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' };
+  const opts = { runningMode:'VIDEO', numHands:2, minHandDetectionConfidence:.5, minTrackingConfidence:.5 };
+  try { handLandmarker = await vis.HandLandmarker.createFromOptions(fs, {...opts, baseOptions:{...base, delegate:'GPU'}}); }
+  catch(e){ handLandmarker = await vis.HandLandmarker.createFromOptions(fs, {...opts, baseOptions:{...base, delegate:'CPU'}}); }
+}
+
+$('btn').addEventListener('click', async () => {
+  $('btn').disabled = true; estado.textContent = 'Abriendo cámara…';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
+    video.srcObject = stream; await video.play(); usingCam = true;
+  } catch(e){
+    estado.textContent = 'No pude abrir la cámara (' + (e.name || 'error') + '). Seguimos sin ella.';
+  }
+  if (usingCam){
+    estado.textContent = 'Cargando detector de manos…';
+    try { await cargarManos(); } catch(e){ console.warn(e); estado.textContent = 'El detector de manos no cargó: queda solo el movimiento.'; await new Promise(r => setTimeout(r, 1500)); }
+  }
+  try { await document.documentElement.requestFullscreen?.(); } catch(e){}
+  $('inicio').remove(); $('ojo').style.display = 'block';
+});
+$('ojo').addEventListener('click', () => {
+  const on = hud.style.display !== 'block';
+  hud.style.display = on ? 'block' : 'none'; video.style.display = on ? 'block' : 'none';
+});
+
+resize();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

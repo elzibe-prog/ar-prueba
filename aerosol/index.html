@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>AEROSOL · PRUEBA</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;font-family:system-ui,sans-serif;color:#fff;background:#0d0b14;touch-action:none;-webkit-user-select:none;user-select:none}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #ov{pointer-events:none}
+  #inicio{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0d0b14}
+  #inicio h1{font-size:14px;letter-spacing:.25em;font-weight:500;margin:0 0 14px}
+  #inicio p{font-size:14px;opacity:.75;max-width:360px;line-height:1.55;margin:0 0 22px}
+  #inicio a{color:#9ad;}
+  #btn{font-size:15px;padding:14px 30px;border-radius:999px;border:1.5px solid #fff;background:transparent;color:#fff;letter-spacing:.08em}
+  #estado{margin-top:18px;font-size:12px;opacity:.6;min-height:16px}
+  #barra{position:fixed;left:0;right:0;bottom:12px;z-index:6;display:none;justify-content:center;flex-wrap:wrap;gap:8px;padding:0 8px}
+  #barra button{height:40px;padding:0 14px;border-radius:999px;border:1px solid #fff8;background:#0007;color:#fff;font-size:13px}
+  #hud{position:fixed;left:12px;top:10px;z-index:5;font-size:11px;opacity:.8;pointer-events:none;text-shadow:0 1px 3px #000;white-space:pre;display:none}
+  #prev{position:fixed;right:10px;top:10px;z-index:5;width:160px;border-radius:8px;opacity:.85;display:none}
+</style>
+<script src="cv.js"></script>
+<script src="aruco.js"></script>
+</head>
+<body>
+<canvas id="paint"></canvas>
+<canvas id="ov"></canvas>
+<video id="prev" playsinline muted></video>
+<div id="hud"></div>
+<div id="barra">
+  <button id="bCam">Cámara ↔</button>
+  <button id="bTrig">Pinta: siempre</button>
+  <button id="bModo">Se acumula</button>
+  <button id="bBorrar">Borrar</button>
+  <button id="bOjo">👁</button>
+</div>
+<div id="inicio">
+  <h1>AEROSOL · PRUEBA</h1>
+  <p>Mostrale a la cámara la <b>marca impresa</b> (<a href="marcas.pdf" target="_blank">marcas.pdf</a>) pegada en una lata o un cartón.<br>La pintura sale donde está la marca.<br><b>Más cerca</b> de la cámara: trazo fino y denso. <b>Más lejos</b>: nube ancha.<br><b>Girar</b> la lata cambia el color.<br>Si apretás la pantalla o la barra espaciadora, también pinta.<br><br>La cámara solo se usa para ver la marca. No se guarda nada.</p>
+  <button id="btn">EMPEZAR</button>
+  <div id="estado"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const paint = $('paint'), pctx = paint.getContext('2d'), ov = $('ov'), octx = ov.getContext('2d');
+const video = $('prev'), hud = $('hud'), estado = $('estado');
+let W = 0, H = 0, dpr = 1;
+
+function resize(){
+  const old = document.createElement('canvas'); old.width = paint.width; old.height = paint.height;
+  if (paint.width) old.getContext('2d').drawImage(paint, 0, 0);
+  W = innerWidth; H = innerHeight; dpr = Math.min(devicePixelRatio || 1, 2);
+  for (const c of [paint, ov]){ c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  pctx.setTransform(dpr,0,0,dpr,0,0); octx.setTransform(dpr,0,0,dpr,0,0);
+  if (old.width) pctx.drawImage(old, 0, 0, W, H);
+}
+addEventListener('resize', resize); resize();
+
+/* ===== cámara ===== */
+let mirror = true, facing = 'user', stream = null, camOk = false;
+async function iniciarCamara(){
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing, width:{ideal:960}, height:{ideal:540}}, audio:false});
+  video.srcObject = stream; await video.play();
+  mirror = facing === 'user'; video.style.transform = mirror ? 'scaleX(-1)' : 'none'; camOk = true;
+}
+
+/* ===== detección de marcas ===== */
+const detector = new AR.Detector({dictionaryName:'ARUCO_MIP_36h12'});
+const dc = document.createElement('canvas'), dctx = dc.getContext('2d', {willReadFrequently:true});
+let lastVT = -1, tracks = {}, fps = 0, fr = 0, fpsT = performance.now(), markersN = 0, lastSide = 0;
+function detectar(now){
+  if (!camOk || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime;
+  const dw = 480, dh = Math.round(480 * video.videoHeight / video.videoWidth) || 360;
+  if (dc.width !== dw) { dc.width = dw; dc.height = dh; }
+  dctx.drawImage(video, 0, 0, dw, dh);
+  let ms = []; try { ms = detector.detect(dctx.getImageData(0, 0, dw, dh)); } catch(e){}
+  markersN = ms.length;
+  for (const m of ms){
+    if (m.id > 3) continue;   // solo las marcas 0 a 3 del PDF; ignora falsos positivos
+    const c = m.corners; if (!c || c.length < 4) continue;
+    const cx = (c[0].x+c[1].x+c[2].x+c[3].x)/4, cy = (c[0].y+c[1].y+c[2].y+c[3].y)/4;
+    const side = (Math.hypot(c[1].x-c[0].x, c[1].y-c[0].y) + Math.hypot(c[2].x-c[1].x, c[2].y-c[1].y) +
+                  Math.hypot(c[3].x-c[2].x, c[3].y-c[2].y) + Math.hypot(c[0].x-c[3].x, c[0].y-c[3].y)) / 4;
+    const ux = (c[0].x+c[1].x)/2 - (c[3].x+c[2].x)/2, uy = (c[0].y+c[1].y)/2 - (c[3].y+c[2].y)/2;
+    let roll = Math.atan2(ux, -uy); if (mirror) roll = -roll;
+    const nx = (mirror ? 1 - cx / dw : cx / dw), ny = cy / dh;
+    const tr = tracks[m.id] || (tracks[m.id] = {x:nx*W, y:ny*H, side, roll, seen:0, px:null, py:null, corners:null});
+    const k = tr.seen ? .5 : 1;
+    tr.x += (nx*W - tr.x) * k; tr.y += (ny*H - tr.y) * k; tr.side += (side - tr.side) * .4;
+    let dr = roll - tr.roll; while (dr > Math.PI) dr -= 2*Math.PI; while (dr < -Math.PI) dr += 2*Math.PI;
+    tr.roll += dr * .3; tr.seen = now; lastSide = tr.side;
+    tr.corners = c.map(p => ({x:(mirror ? 1 - p.x/dw : p.x/dw) * W, y:p.y/dh * H}));
+  }
+}
+
+/* ===== micrófono (soplido / "ssss" como gatillo) ===== */
+let ac = null, an = null, abuf = null, micLevel = 0, micBase = 0, hiss = false;
+async function micOn(){
+  const s = await navigator.mediaDevices.getUserMedia({audio:true});
+  ac = new (window.AudioContext || window.webkitAudioContext)(); await ac.resume();
+  an = ac.createAnalyser(); an.fftSize = 512; ac.createMediaStreamSource(s).connect(an); abuf = new Uint8Array(an.frequencyBinCount);
+}
+function micStep(){
+  if (!an) return;
+  an.getByteFrequencyData(abuf);
+  const a = Math.floor(4000 / (ac.sampleRate / 2) * abuf.length); let s = 0, n = 0;
+  for (let i = a; i < abuf.length; i++){ s += abuf[i]; n++; }
+  micLevel = (s / n) / 255;
+  hiss = micLevel > micBase + .10;
+  if (!hiss) micBase += (micLevel - micBase) * .03;
+}
+
+/* ===== pintura ===== */
+const CELL = 14; let wet = new Float32Array(1), gw = 1, gh = 1; let drips = [];
+function initWet(){ gw = Math.ceil(W / CELL); gh = Math.ceil(H / CELL); wet = new Float32Array(gw * gh); }
+initWet(); addEventListener('resize', initWet);
+const baseHue = {0:12, 1:195, 2:50, 3:300};
+function spray(x, y, R, dens, hue){
+  pctx.fillStyle = `hsla(${hue},95%,58%,.5)`;
+  for (let i = 0; i < dens; i++){
+    const a = Math.random() * 6.2832, r = R * Math.sqrt(-2 * Math.log(1 - Math.random() * .999)) * .42;
+    const sz = .7 + Math.random() * 1.6;
+    pctx.fillRect(x + Math.cos(a) * r, y + Math.sin(a) * r, sz, sz);
+  }
+  // húmedo → chorreadura
+  const cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
+  if (cx >= 0 && cy >= 0 && cx < gw && cy < gh){
+    const i = cy * gw + cx; wet[i] += dens * .7;
+    if (wet[i] > 320 && Math.random() < .06){
+      wet[i] -= 160;
+      drips.push({x:x + (Math.random() - .5) * R * .5, y:y + R * .15, v:50 + Math.random() * 60, w:1.4 + Math.random() * 2.2, hue, len:50 + Math.random() * 190, run:0});
+    }
+  }
+}
+function dripsStep(dt){
+  for (let i = drips.length - 1; i >= 0; i--){
+    const d = drips[i], dy = d.v * dt; d.run += dy;
+    pctx.fillStyle = `hsla(${d.hue},95%,52%,.9)`; pctx.fillRect(d.x - d.w/2, d.y, d.w, dy + 1);
+    d.y += dy; d.v *= (1 - dt * 1.1);
+    if (d.v < 3 || d.run > d.len){ pctx.beginPath(); pctx.arc(d.x, d.y, d.w * .8, 0, 6.2832); pctx.fill(); drips.splice(i, 1); }
+  }
+  for (let i = 0; i < wet.length; i++) wet[i] *= (1 - dt * .15);
+}
+
+/* ===== controles ===== */
+let trigMode = 0, desvanece = false, held = false;
+addEventListener('pointerdown', e => { if (e.target.tagName !== 'BUTTON'){ held = true; tracks.__p = {x:e.clientX, y:e.clientY, side:60, roll:0, seen:performance.now(), corners:null}; } });
+addEventListener('pointermove', e => { if (held && tracks.__p){ tracks.__p.x = e.clientX; tracks.__p.y = e.clientY; tracks.__p.seen = performance.now(); } });
+addEventListener('pointerup', () => { held = false; delete tracks.__p; });
+addEventListener('keydown', e => { if (e.code === 'Space') held = true; });
+addEventListener('keyup', e => { if (e.code === 'Space') held = false; });
+
+function limpiar(){ pctx.clearRect(0, 0, W, H); drips.length = 0; wet.fill(0); }
+$('bBorrar').addEventListener('click', limpiar);
+$('bModo').addEventListener('click', () => { desvanece = !desvanece; $('bModo').textContent = desvanece ? 'Se desvanece' : 'Se acumula'; });
+$('bCam').addEventListener('click', async () => { facing = facing === 'user' ? 'environment' : 'user'; try { await iniciarCamara(); } catch(e){ facing = facing === 'user' ? 'environment' : 'user'; } });
+$('bOjo').addEventListener('click', () => { const on = hud.style.display !== 'block'; hud.style.display = on ? 'block' : 'none'; video.style.display = on ? 'block' : 'none'; });
+$('bTrig').addEventListener('click', async () => {
+  if (trigMode === 0){
+    try { if (!an) await micOn(); trigMode = 1; $('bTrig').textContent = 'Pinta: con soplido / ssss'; }
+    catch(e){ $('bTrig').textContent = 'Pinta: siempre (sin micrófono)'; }
+  } else { trigMode = 0; $('bTrig').textContent = 'Pinta: siempre'; }
+});
+
+/* ===== loop ===== */
+let last = performance.now();
+function tick(now){
+  requestAnimationFrame(tick);
+  const dt = Math.min(.05, (now - last) / 1000); last = now; fr++;
+  if (now - fpsT > 1000){ fps = fr; fr = 0; fpsT = now; }
+  detectar(now); micStep();
+
+  if (desvanece){ pctx.globalCompositeOperation = 'destination-out'; pctx.fillStyle = 'rgba(0,0,0,.012)'; pctx.fillRect(0, 0, W, H); pctx.globalCompositeOperation = 'source-over'; }
+
+  const dispara = held || trigMode === 0 || hiss;
+  octx.clearRect(0, 0, W, H);
+  for (const id in tracks){
+    const tr = tracks[id]; if (now - tr.seen > 140) continue;
+    if (dispara){
+      const ref = Math.min(W, H);
+      const rel = 60 / Math.max(20, tr.side);                 // más cerca (marca grande) → rel chico
+      const R = Math.max(ref * .012, Math.min(ref * .14, ref * .035 * rel * rel));
+      const dens = Math.round(55 * Math.min(1.6, 1 / Math.max(.6, rel)));
+      const hue = ((baseHue[id] ?? 20) + tr.roll * 57.3) % 360;
+      spray(tr.x, tr.y, R, dens, (hue + 360) % 360);
+    }
+    if (hud.style.display === 'block'){
+      octx.strokeStyle = '#00ff88'; octx.lineWidth = 2;
+      if (tr.corners){ octx.beginPath(); tr.corners.forEach((p, i) => i ? octx.lineTo(p.x, p.y) : octx.moveTo(p.x, p.y)); octx.closePath(); octx.stroke(); }
+      octx.fillStyle = '#00ff88'; octx.font = '12px system-ui'; octx.fillText('id ' + id, tr.x + 8, tr.y - 8);
+    }
+  }
+  dripsStep(dt);
+  if (hud.style.display === 'block')
+    hud.textContent = `fps ${fps}\nmarcas ${markersN}\nlado ${lastSide.toFixed(0)} px\n` + (an ? `mic ${micLevel.toFixed(2)} (base ${micBase.toFixed(2)}) ${hiss ? 'SSSS' : ''}` : 'mic apagado');
+}
+
+/* ===== arranque ===== */
+$('btn').addEventListener('click', async () => {
+  $('btn').disabled = true; estado.textContent = 'Abriendo cámara…';
+  try { await iniciarCamara(); }
+  catch(e){ estado.textContent = 'No pude abrir la cámara. Podés pintar con el dedo o la barra espaciadora.'; await new Promise(r => setTimeout(r, 1800)); }
+  try { await document.documentElement.requestFullscreen?.(); } catch(e){}
+  $('inicio').remove(); $('barra').style.display = 'flex'; resize();
+});
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

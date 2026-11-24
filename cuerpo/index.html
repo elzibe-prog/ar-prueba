@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>CUERPO · PRUEBA</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;font-family:system-ui,sans-serif;color:#fff;background:#05040a;touch-action:none;-webkit-user-select:none;user-select:none}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #ov{pointer-events:none}
+  #inicio{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;background:#05040a}
+  #inicio h1{font-size:14px;letter-spacing:.25em;font-weight:500;margin:0 0 14px}
+  #inicio p{font-size:14px;opacity:.75;max-width:360px;line-height:1.55;margin:0 0 22px}
+  #btn{font-size:15px;padding:14px 30px;border-radius:999px;border:1.5px solid #fff;background:transparent;color:#fff;letter-spacing:.08em}
+  #estado{margin-top:18px;font-size:12px;opacity:.6;min-height:16px}
+  #barra{position:fixed;left:0;right:0;bottom:12px;z-index:6;display:none;justify-content:center;flex-wrap:wrap;gap:8px;padding:0 8px}
+  #barra button{height:40px;padding:0 14px;border-radius:999px;border:1px solid #fff8;background:#0007;color:#fff;font-size:13px}
+  #hud{position:fixed;left:12px;top:10px;z-index:5;font-size:11px;opacity:.8;pointer-events:none;text-shadow:0 1px 3px #000;white-space:pre;display:none}
+  #prev{position:fixed;right:10px;top:10px;z-index:5;width:160px;border-radius:8px;opacity:.85;display:none}
+</style>
+</head>
+<body>
+<canvas id="trail"></canvas>
+<canvas id="ov"></canvas>
+<video id="prev" playsinline muted></video>
+<div id="hud"></div>
+<div id="barra">
+  <button id="bCam">Cámara ↔</button>
+  <button id="bPts">Rastro: manos y pies</button>
+  <button id="bLen">Largo: medio</button>
+  <button id="bEsq">Esqueleto: sí</button>
+  <button id="bBorrar">Borrar</button>
+  <button id="bOjo">👁</button>
+</div>
+<div id="inicio">
+  <h1>CUERPO · PRUEBA</h1>
+  <p>Pará a 2 o 3 metros de la cámara, con el cuerpo entero a la vista y buena luz.<br>Tus manos y tus pies dejan un rastro de luz mientras te movés.<br>Con el iPad o la notebook apoyados, o con la cámara trasera apuntando a otra persona (botón "Cámara ↔").<br><br>La cámara solo se usa para leer el movimiento. No se guarda nada.</p>
+  <button id="btn">EMPEZAR</button>
+  <div id="estado"></div>
+</div>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const trail = $('trail'), tctx = trail.getContext('2d'), ov = $('ov'), octx = ov.getContext('2d');
+const video = $('prev'), hud = $('hud'), estado = $('estado');
+let W = 0, H = 0, dpr = 1;
+function resize(){
+  const old = document.createElement('canvas'); old.width = trail.width; old.height = trail.height;
+  if (trail.width) old.getContext('2d').drawImage(trail, 0, 0);
+  W = innerWidth; H = innerHeight; dpr = Math.min(devicePixelRatio || 1, 2);
+  for (const c of [trail, ov]){ c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  tctx.setTransform(dpr,0,0,dpr,0,0); octx.setTransform(dpr,0,0,dpr,0,0);
+  if (old.width) tctx.drawImage(old, 0, 0, W, H);
+}
+addEventListener('resize', resize); resize();
+
+/* ===== cámara ===== */
+let mirror = true, facing = 'user', stream = null, camOk = false;
+async function iniciarCamara(){
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing, width:{ideal:960}, height:{ideal:540}}, audio:false});
+  video.srcObject = stream; await video.play();
+  mirror = facing === 'user'; video.style.transform = mirror ? 'scaleX(-1)' : 'none'; camOk = true;
+}
+
+/* ===== pose (MediaPipe) ===== */
+let pose = null, lastVT = -1;
+async function cargarPose(){
+  const V = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+  const vis = await import(V + '/vision_bundle.mjs');
+  const fs = await vis.FilesetResolver.forVisionTasks(V + '/wasm');
+  const base = { modelAssetPath:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task' };
+  const opts = { runningMode:'VIDEO', numPoses:2 };
+  try { pose = await vis.PoseLandmarker.createFromOptions(fs, {...opts, baseOptions:{...base, delegate:'GPU'}}); }
+  catch(e){ pose = await vis.PoseLandmarker.createFromOptions(fs, {...opts, baseOptions:{...base, delegate:'CPU'}}); }
+}
+
+/* ===== configuración de rastros ===== */
+const SETS = [
+  {nombre:'manos y pies', pts:[15,16,27,28]},
+  {nombre:'solo manos',   pts:[15,16,19,20]},
+  {nombre:'todo el cuerpo', pts:[0,13,14,15,16,25,26,27,28]},
+];
+const LENS = [{nombre:'corto', a:.14}, {nombre:'medio', a:.05}, {nombre:'largo', a:.018}];
+let setI = 0, lenI = 1, esqueleto = true;
+const HUE = {15:330, 16:190, 19:350, 20:210, 27:45, 28:140, 0:60, 13:300, 14:230, 25:20, 26:160};
+const BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],[27,31],[28,32],[15,19],[16,20]];
+const prev = {};   // `${persona}-${punto}` → {x,y}
+const smooth = {}; // suavizado
+
+function procesar(res){
+  octx.clearRect(0, 0, W, H);
+  const people = res.landmarks || [];
+  // desvanecer lo anterior
+  tctx.globalCompositeOperation = 'destination-out'; tctx.fillStyle = `rgba(0,0,0,${LENS[lenI].a})`; tctx.fillRect(0, 0, W, H);
+  tctx.globalCompositeOperation = 'lighter'; tctx.lineCap = 'round';
+  people.forEach((lm, p) => {
+    const pt = k => {
+      const q = lm[k]; if (!q || (q.visibility !== undefined && q.visibility < .35)) return null;
+      const key = p + '-' + k; const x = (mirror ? 1 - q.x : q.x) * W, y = q.y * H;
+      const s = smooth[key] || (smooth[key] = {x, y});
+      s.x += (x - s.x) * .55; s.y += (y - s.y) * .55; return s;
+    };
+    for (const k of SETS[setI].pts){
+      const cur = pt(k), key = p + '-' + k;
+      if (!cur){ delete prev[key]; continue; }
+      const pr = prev[key];
+      if (pr){
+        const d = Math.hypot(cur.x - pr.x, cur.y - pr.y);
+        if (d < Math.min(W, H) * .35 && d > .4){
+          const hue = ((HUE[k] ?? (k * 29)) + p * 70) % 360, w = Math.max(1.5, Math.min(16, 2 + d * .55));
+          tctx.strokeStyle = `hsla(${hue},95%,60%,.20)`; tctx.lineWidth = w * 2.6;
+          tctx.beginPath(); tctx.moveTo(pr.x, pr.y); tctx.lineTo(cur.x, cur.y); tctx.stroke();
+          tctx.strokeStyle = `hsla(${hue},95%,72%,.85)`; tctx.lineWidth = w;
+          tctx.beginPath(); tctx.moveTo(pr.x, pr.y); tctx.lineTo(cur.x, cur.y); tctx.stroke();
+        }
+      }
+      prev[key] = {x:cur.x, y:cur.y};
+    }
+    if (esqueleto){
+      octx.strokeStyle = 'rgba(255,255,255,.28)'; octx.lineWidth = 1.5; octx.beginPath();
+      for (const [a, b] of BONES){ const A = pt(a), B = pt(b); if (A && B){ octx.moveTo(A.x, A.y); octx.lineTo(B.x, B.y); } }
+      octx.stroke();
+      const hd = pt(0); if (hd){ octx.beginPath(); octx.arc(hd.x, hd.y, 14, 0, 6.2832); octx.stroke(); }
+    }
+  });
+  tctx.globalCompositeOperation = 'source-over';
+  if (!people.length) for (const k in prev) delete prev[k];
+  return people.length;
+}
+
+/* ===== loop ===== */
+let fps = 0, fr = 0, fpsT = performance.now(), npers = 0;
+function tick(now){
+  requestAnimationFrame(tick); fr++;
+  if (now - fpsT > 1000){ fps = fr; fr = 0; fpsT = now; }
+  if (pose && camOk && video.readyState >= 2 && video.currentTime !== lastVT){
+    lastVT = video.currentTime;
+    let r = null; try { r = pose.detectForVideo(video, performance.now()); } catch(e){}
+    if (r) npers = procesar(r);
+  }
+  if (hud.style.display === 'block')
+    hud.textContent = `fps ${fps}\npersonas ${npers}\n` + (pose ? 'detector de cuerpo: ok' : 'detector de cuerpo: no cargó');
+}
+
+/* ===== controles ===== */
+$('bBorrar').addEventListener('click', () => { tctx.clearRect(0, 0, W, H); });
+$('bPts').addEventListener('click', () => { setI = (setI + 1) % SETS.length; $('bPts').textContent = 'Rastro: ' + SETS[setI].nombre; for (const k in prev) delete prev[k]; });
+$('bLen').addEventListener('click', () => { lenI = (lenI + 1) % LENS.length; $('bLen').textContent = 'Largo: ' + LENS[lenI].nombre; });
+$('bEsq').addEventListener('click', () => { esqueleto = !esqueleto; $('bEsq').textContent = 'Esqueleto: ' + (esqueleto ? 'sí' : 'no'); octx.clearRect(0, 0, W, H); });
+$('bCam').addEventListener('click', async () => { const f = facing; facing = facing === 'user' ? 'environment' : 'user'; try { await iniciarCamara(); } catch(e){ facing = f; } });
+$('bOjo').addEventListener('click', () => { const on = hud.style.display !== 'block'; hud.style.display = on ? 'block' : 'none'; video.style.display = on ? 'block' : 'none'; });
+
+$('btn').addEventListener('click', async () => {
+  $('btn').disabled = true; estado.textContent = 'Abriendo cámara…';
+  try { await iniciarCamara(); } catch(e){ estado.textContent = 'No pude abrir la cámara (' + (e.name || 'error') + ').'; $('btn').disabled = false; return; }
+  estado.textContent = 'Cargando detector de cuerpo…';
+  try { await cargarPose(); } catch(e){ console.warn(e); estado.textContent = 'El detector de cuerpo no cargó. Probá de nuevo o con otra conexión.'; $('btn').disabled = false; return; }
+  try { await document.documentElement.requestFullscreen?.(); } catch(e){}
+  $('inicio').remove(); $('barra').style.display = 'flex'; resize();
+});
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

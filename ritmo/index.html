@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>RITMO · PRUEBA</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;font-family:system-ui,sans-serif;color:#fff;background:#06050c;touch-action:none;-webkit-user-select:none;user-select:none}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #vid{position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none}
+  #inicio{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:22px;background:#06050c;overflow:auto}
+  #inicio h1{font-size:14px;letter-spacing:.25em;font-weight:500;margin:0 0 12px}
+  #inicio p{font-size:13.5px;opacity:.78;max-width:380px;line-height:1.5;margin:0 0 16px}
+  #inicio a{color:#9ad}
+  #btn{font-size:15px;padding:14px 30px;border-radius:999px;border:1.5px solid #fff;background:transparent;color:#fff;letter-spacing:.08em}
+  #estado{margin-top:16px;font-size:12px;opacity:.6;min-height:16px}
+  #chips{position:fixed;left:8px;top:calc(15.5% + 4px);z-index:6;display:none;flex-direction:column;gap:6px}
+  #chips button{height:32px;padding:0 12px;border-radius:999px;border:1px solid #fff6;background:#0009;color:#fff;font-size:12px;text-align:left}
+  #hud{position:fixed;right:10px;top:calc(15.5% + 4px);z-index:5;font-size:11px;opacity:.8;pointer-events:none;text-shadow:0 1px 3px #000;white-space:pre;display:none;text-align:right}
+</style>
+<script src="cv.js"></script>
+<script src="aruco.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="vid" playsinline muted></video>
+<div id="hud"></div>
+<div id="chips">
+  <button id="bModo">Modo: mantener</button>
+  <button id="bCamVer">Cámara: tenue</button>
+  <button id="bCam">Cámara ↔</button>
+  <button id="bPausa">Pausa</button>
+  <button id="bOjo">Datos</button>
+</div>
+<div id="inicio">
+  <h1>RITMO · PRUEBA</h1>
+  <p>La pantalla tiene <b>4 columnas</b>, una por instrumento: <b>bombo, caja, hi-hat y bajo</b>.<br>
+  Poné la mano (o movete) en una columna y ese instrumento suena. Con todos juntos armás la pista.<br>
+  <b>Altura de la mano</b>: cambia el sonido (en el bajo, la nota).<br>
+  <b>Franja de arriba</b>: la mano a izquierda o derecha cambia la velocidad (BPM).<br>
+  <b>Franja de abajo</b>: la mano a la derecha agrega eco.<br>
+  <b>Marcas impresas</b> (<a href="marcas.pdf" target="_blank">marcas.pdf</a>): la 0 es bombo, la 1 caja, la 2 hi-hat y la 3 bajo. Al mostrarlas, el instrumento suena; girarlas cambia el sonido.<br>
+  También funciona con el dedo en la pantalla.</p>
+  <button id="btn">EMPEZAR</button>
+  <div id="estado"></div>
+</div>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const cv = $('c'), g = cv.getContext('2d'), vid = $('vid'), hud = $('hud'), estado = $('estado');
+let W = 0, H = 0, dpr = 1;
+function resize(){ W = innerWidth; H = innerHeight; dpr = Math.min(devicePixelRatio || 1, 2); cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); g.setTransform(dpr,0,0,dpr,0,0); }
+addEventListener('resize', resize); resize();
+
+/* ================= AUDIO (todo sintetizado, sin archivos) ================= */
+let ac = null, master, delay, wet, noiseBuf, delayFb;
+let bpm = 108, fx = 0;
+function audioInit(){
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  const comp = ac.createDynamicsCompressor(); master = ac.createGain(); master.gain.value = .85; master.connect(comp); comp.connect(ac.destination);
+  delay = ac.createDelay(2); delayFb = ac.createGain(); delayFb.gain.value = .42;
+  const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3000;
+  delay.connect(lp); lp.connect(delayFb); delayFb.connect(delay);
+  wet = ac.createGain(); wet.gain.value = 0; lp.connect(wet); wet.connect(master);
+  noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+// el audio de las páginas web puede quedar mudo con el interruptor de silencio en iPhone: este truco lo evita
+function desbloquearIOS(){
+  try {
+    const n = 800, buf = new ArrayBuffer(44 + n), v = new DataView(buf), s = (o, t) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    s(0,'RIFF'); v.setUint32(4,36+n,true); s(8,'WAVE'); s(12,'fmt '); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true); v.setUint32(24,8000,true); v.setUint32(28,8000,true); v.setUint16(32,1,true); v.setUint16(34,8,true); s(36,'data'); v.setUint32(40,n,true);
+    for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);
+    const a = new Audio(URL.createObjectURL(new Blob([buf], {type:'audio/wav'}))); a.loop = true; a.play().catch(()=>{});
+  } catch(e){}
+}
+function route(node){ node.connect(master); const s = ac.createGain(); s.gain.value = .55; node.connect(s); s.connect(delay); }
+function noise(t, dur){ const n = ac.createBufferSource(); n.buffer = noiseBuf; n.start(t, Math.random() * .5, dur); return n; }
+function env(gn, t, a, peak, dec){ gn.gain.setValueAtTime(0.0001, t); gn.gain.exponentialRampToValueAtTime(Math.max(.0002, peak), t + a); gn.gain.exponentialRampToValueAtTime(.0001, t + a + dec); }
+
+function vBombo(t, mod, vel){
+  const o = ac.createOscillator(), gn = ac.createGain(); o.type = 'sine';
+  o.frequency.setValueAtTime(190 + mod * 90, t); o.frequency.exponentialRampToValueAtTime(44 + mod * 12, t + .14);
+  env(gn, t, .004, .95 * vel, .30 + mod * .22); o.connect(gn); route(gn); o.start(t); o.stop(t + .7);
+  const n = noise(t, .02), hp = ac.createBiquadFilter(), gc = ac.createGain(); hp.type = 'highpass'; hp.frequency.value = 2500; env(gc, t, .001, .25 * vel, .015); n.connect(hp); hp.connect(gc); route(gc);
+}
+function vCaja(t, mod, vel){
+  const n = noise(t, .3), bp = ac.createBiquadFilter(), gn = ac.createGain(); bp.type = 'bandpass'; bp.frequency.value = 1400 + mod * 2600; bp.Q.value = .8;
+  env(gn, t, .002, .55 * vel, .16 + (1 - mod) * .08); n.connect(bp); bp.connect(gn); route(gn);
+  const o = ac.createOscillator(), go = ac.createGain(); o.type = 'triangle'; o.frequency.setValueAtTime(220, t); o.frequency.exponentialRampToValueAtTime(130, t + .08); env(go, t, .002, .35 * vel, .1); o.connect(go); route(go); o.start(t); o.stop(t + .3);
+  for (const dt of [0, .011, .022]){ const c = noise(t + dt, .06), b2 = ac.createBiquadFilter(), g2 = ac.createGain(); b2.type = 'bandpass'; b2.frequency.value = 1300; env(g2, t + dt, .001, .22 * vel, .05); c.connect(b2); b2.connect(g2); route(g2); }
+}
+function vHat(t, mod, vel, acento){
+  const n = noise(t, .5), hp = ac.createBiquadFilter(), gn = ac.createGain(); hp.type = 'highpass'; hp.frequency.value = 6500;
+  env(gn, t, .001, (acento ? .42 : .28) * vel, .03 + mod * .3); n.connect(hp); hp.connect(gn); route(gn);
+}
+const ESC = [0, 3, 5, 7, 10, 12];
+function vBajo(t, nota, mod, vel, dur){
+  const f = 55 * Math.pow(2, nota / 12), gn = ac.createGain(), lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 6;
+  lp.frequency.setValueAtTime(500 + mod * 1500, t); lp.frequency.exponentialRampToValueAtTime(180, t + dur);
+  for (const [tipo, det] of [['sawtooth', 0], ['square', 6]]){ const o = ac.createOscillator(); o.type = tipo; o.frequency.value = f; o.detune.value = det; o.connect(lp); o.start(t); o.stop(t + dur + .1); }
+  env(gn, t, .005, .4 * vel, dur); lp.connect(gn); route(gn);
+}
+
+/* ================= SECUENCIADOR ================= */
+const TR = [ {n:'BOMBO', hue:350}, {n:'CAJA', hue:42}, {n:'HI-HAT', hue:175}, {n:'BAJO', hue:268} ];
+const trk = TR.map(() => ({on:false, last:0, prevPresent:false, mod:.5, vel:1, flash:0, present:false}));
+let step = 0, nextT = 0, bar = 0, running = true, energia = 0, uiQ = [];
+const BAJO_PAT = {0:0, 3:0, 6:3, 8:0, 10:5, 11:0, 14:2};
+const RAICES = [0, 3, 5, 7, -2];   // La, Do, Re, Mi, Sol
+function tocarPaso(s, t){
+  const hits = [false, false, false, false];
+  const b = trk[0]; if (b.on && (s % 4 === 0 || (bar % 4 === 3 && s === 14))){ vBombo(t, b.mod, b.vel); hits[0] = true; }
+  const c = trk[1]; if (c.on && (s === 4 || s === 12 || (bar % 4 === 3 && (s === 14 || s === 15)))){ vCaja(t, c.mod, c.vel); hits[1] = true; }
+  const h = trk[2]; if (h.on){
+    const rapido = energia > .3, off = s % 4 === 2;
+    if (rapido || s % 2 === 0){ vHat(t, off ? h.mod : h.mod * .15, h.vel * (off ? 1 : .55), off); hits[2] = true; }
+  }
+  const ba = trk[3]; if (ba.on && s in BAJO_PAT){
+    const raiz = RAICES[Math.min(RAICES.length - 1, Math.floor(ba.mod * RAICES.length))];
+    const dur = (60 / bpm / 4) * 1.8; vBajo(t, raiz + ESC[BAJO_PAT[s]] , ba.mod, ba.vel, dur); hits[3] = true;
+  }
+  uiQ.push({t, s, hits});
+}
+function scheduler(){
+  if (!ac || !running) return;
+  const sd = 60 / bpm / 4; delay.delayTime.value = Math.min(1.9, sd * 3);
+  if (nextT < ac.currentTime) nextT = ac.currentTime + .05;
+  while (nextT < ac.currentTime + .12){ tocarPaso(step, nextT); nextT += sd; step = (step + 1) % 16; if (step === 0) bar++; }
+}
+setInterval(scheduler, 25);
+
+/* ================= ENTRADAS ================= */
+let modoFijar = false, camTenue = true, mirror = true, facing = 'user', stream = null, camOk = false;
+const entradas = () => TR.map(() => ({present:false, mod:null, vel:null}));
+let inp = entradas();
+let tempoX = null, ecoX = null;
+const puntos = [];                // manos y puntero: {x,y (0..1), fuente}
+let pointer = null;
+addEventListener('pointerdown', e => { if (e.target.tagName === 'BUTTON') return; pointer = {x:e.clientX / W, y:e.clientY / H}; });
+addEventListener('pointermove', e => { if (pointer) pointer = {x:e.clientX / W, y:e.clientY / H}; });
+addEventListener('pointerup', () => { pointer = null; });
+
+async function iniciarCamara(){
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing, width:{ideal:960}, height:{ideal:540}}, audio:false});
+  vid.srcObject = stream; await vid.play(); mirror = facing === 'user'; camOk = true;
+}
+
+/* manos */
+let handLm = null, lastVT = -1, manos = [];
+async function cargarManos(){
+  const V = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+  const vis = await import(V + '/vision_bundle.mjs'); const fs = await vis.FilesetResolver.forVisionTasks(V + '/wasm');
+  const base = { modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' };
+  const opts = { runningMode:'VIDEO', numHands:2, minHandDetectionConfidence:.5, minTrackingConfidence:.5 };
+  try { handLm = await vis.HandLandmarker.createFromOptions(fs, {...opts, baseOptions:{...base, delegate:'GPU'}}); }
+  catch(e){ handLm = await vis.HandLandmarker.createFromOptions(fs, {...opts, baseOptions:{...base, delegate:'CPU'}}); }
+}
+function pasoManos(){
+  if (!handLm || !camOk || vid.readyState < 2 || vid.currentTime === lastVT) return; lastVT = vid.currentTime;
+  let r; try { r = handLm.detectForVideo(vid, performance.now()); } catch(e){ return; }
+  manos = (r.landmarks || []).map(lm => { const p = lm[9]; return {x:mirror ? 1 - p.x : p.x, y:p.y}; });
+}
+
+/* movimiento por columnas */
+const GW = 32, GH = 24, sm = document.createElement('canvas'); sm.width = GW; sm.height = GH; const sctx = sm.getContext('2d', {willReadFrequently:true});
+let prevGray = null; const act = new Float32Array(GW * GH); const colMov = [0,0,0,0]; let movN = 0;
+function pasoMov(){
+  if (!camOk || vid.readyState < 2) return;
+  sctx.save(); if (mirror){ sctx.translate(GW, 0); sctx.scale(-1, 1); } sctx.drawImage(vid, 0, 0, GW, GH); sctx.restore();
+  const d = sctx.getImageData(0, 0, GW, GH).data, gray = new Float32Array(GW * GH);
+  for (let i = 0; i < gray.length; i++) gray[i] = (d[i*4] + d[i*4+1] + d[i*4+2]) / 765;
+  if (prevGray) for (let i = 0; i < gray.length; i++){ const v = Math.abs(gray[i] - prevGray[i]) > .08 ? 1 : 0; act[i] = Math.max(v, act[i] * .75); }
+  prevGray = gray;
+  const y0 = Math.floor(GH * .16), y1 = Math.floor(GH * .84); let tot = 0;
+  for (let c = 0; c < 4; c++){ let s = 0, n = 0; for (let y = y0; y < y1; y++) for (let x = c * 8; x < c * 8 + 8; x++){ s += act[y * GW + x]; n++; } colMov[c] += (s / n - colMov[c]) * .5; tot += colMov[c]; }
+  movN = tot / 4; energia += (Math.min(1, movN * 4) - energia) * .08;
+}
+
+/* marcas ArUco */
+const detector = new AR.Detector({dictionaryName:'ARUCO_MIP_36h12'});
+const dc = document.createElement('canvas'), dctx = dc.getContext('2d', {willReadFrequently:true});
+let marcas = [], frameN = 0;
+function pasoMarcas(){
+  if (!camOk || vid.readyState < 2) return; frameN++; if (frameN % 2) return;
+  const dw = 480, dh = Math.round(480 * vid.videoHeight / vid.videoWidth) || 270; if (dc.width !== dw){ dc.width = dw; dc.height = dh; }
+  dctx.drawImage(vid, 0, 0, dw, dh); let ms = []; try { ms = detector.detect(dctx.getImageData(0, 0, dw, dh)); } catch(e){}
+  marcas = [];
+  for (const m of ms){
+    if (m.id > 3) continue; const c = m.corners; if (!c || c.length < 4) continue;
+    const cx = (c[0].x + c[1].x + c[2].x + c[3].x) / 4, cy = (c[0].y + c[1].y + c[2].y + c[3].y) / 4;
+    const side = Math.hypot(c[1].x - c[0].x, c[1].y - c[0].y);
+    const ux = (c[0].x + c[1].x) / 2 - (c[3].x + c[2].x) / 2, uy = (c[0].y + c[1].y) / 2 - (c[3].y + c[2].y) / 2;
+    let roll = Math.atan2(ux, -uy); if (mirror) roll = -roll;
+    marcas.push({id:m.id, x:(mirror ? 1 - cx / dw : cx / dw), y:cy / dh, side, roll, quad:c.map(p => ({x:(mirror ? 1 - p.x / dw : p.x / dw), y:p.y / dh})), t:performance.now()});
+  }
+}
+
+/* combinar todo */
+function combinar(now){
+  inp = entradas(); const pts = manos.map(m => ({...m})); if (pointer) pts.push({...pointer});
+  let tx = null, ex = null;
+  for (const p of pts){
+    if (p.y < .14){ tx = p.x; continue; }
+    if (p.y > .86){ ex = p.x; continue; }
+    const c = Math.min(3, Math.max(0, Math.floor(p.x * 4))); const i = inp[c]; i.present = true; i.mod = 1 - (p.y - .14) / .72; if (i.mod < 0) i.mod = 0; if (i.mod > 1) i.mod = 1;
+  }
+  tempoX = tx; ecoX = ex;
+  for (let c = 0; c < 4; c++) if (colMov[c] > .06){ inp[c].present = true; if (inp[c].mod === null) inp[c].mod = .5; }
+  for (const m of marcas){ const i = inp[m.id]; i.present = true; i.mod = Math.max(0, Math.min(1, .5 + m.roll / Math.PI)); i.vel = Math.max(.5, Math.min(1, m.side / 90)); }
+  for (let c = 0; c < 4; c++){
+    const t = trk[c], i = inp[c]; t.present = i.present; const gap = now - t.last;
+    if (i.present){ if (modoFijar && gap > 400) t.on = !t.on; t.last = now; if (i.mod !== null) t.mod += (i.mod - t.mod) * .4; t.vel = i.vel ?? 1; }
+    if (!modoFijar) t.on = (now - t.last) < 300;
+  }
+  if (tx !== null) bpm += ((70 + tx * 80) - bpm) * .15;
+  if (ex !== null){ fx += (ex - fx) * .2; }
+  else fx += (fx * .995 - fx) * .02;
+  if (ac) wet.gain.value = Math.min(.85, fx * .9);
+}
+
+/* ================= DIBUJO ================= */
+let fps = 0, fr = 0, fpsT = performance.now(), cur = 0;
+function dibujar(now){
+  const u = Math.min(W, H);
+  g.fillStyle = '#06050c'; g.fillRect(0, 0, W, H);
+  if (camOk && camTenue && vid.readyState >= 2){ g.save(); g.globalAlpha = .28; if (mirror){ g.translate(W, 0); g.scale(-1, 1); } g.drawImage(vid, 0, 0, W, H); g.restore(); }
+  const y0 = H * .14, y1 = H * .86, cw = W / 4;
+  for (let c = 0; c < 4; c++){
+    const t = trk[c], hue = TR[c].hue;
+    const gr = g.createLinearGradient(0, y0, 0, y1); gr.addColorStop(0, `hsla(${hue},90%,55%,${.04 + (t.on ? .12 : 0) + t.flash * .25})`); gr.addColorStop(1, `hsla(${hue},90%,45%,${.10 + (t.on ? .22 : 0) + t.flash * .35})`);
+    g.fillStyle = gr; g.fillRect(c * cw + 2, y0, cw - 4, y1 - y0);
+    if (t.flash > .02){ g.strokeStyle = `hsla(${hue},95%,70%,${t.flash * .8})`; g.lineWidth = 3; g.strokeRect(c * cw + 4, y0 + 2, cw - 8, y1 - y0 - 4); }
+    g.fillStyle = `hsla(${hue},90%,75%,${t.on ? 1 : .45})`; g.font = `600 ${u * .03}px system-ui`; g.textAlign = 'center'; g.fillText(TR[c].n, c * cw + cw / 2, y1 - u * .03);
+    if (t.on){ g.font = `${u * .022}px system-ui`; g.fillText('●', c * cw + cw / 2, y1 - u * .075); }
+    const my = y1 - (y1 - y0) * (.1 + t.mod * .8); if (t.on){ g.fillStyle = `hsla(${hue},95%,70%,.5)`; g.fillRect(c * cw + 8, my, cw - 16, 2); }
+    t.flash *= .86;
+  }
+  // franja de tempo
+  g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(0, 0, W, y0);
+  const bx = (bpm - 70) / 80 * W; g.fillStyle = 'rgba(255,255,255,.16)'; g.fillRect(0, 0, bx, y0);
+  g.fillStyle = '#fff'; g.textAlign = 'left'; g.font = `700 ${u * .05}px system-ui`; g.fillText(Math.round(bpm) + ' BPM', 14, y0 * .55);
+  g.font = `${u * .02}px system-ui`; g.globalAlpha = .6; g.fillText('← lento · rápido →  (mano en esta franja)', 14, y0 * .85); g.globalAlpha = 1;
+  // pasos
+  for (let s = 0; s < 16; s++){ const x = W * .56 + s * (W * .4 / 16); g.fillStyle = s === cur ? '#fff' : (s % 4 === 0 ? 'rgba(255,255,255,.5)' : 'rgba(255,255,255,.22)'); g.beginPath(); g.arc(x, y0 * .5, s === cur ? u * .012 : u * .007, 0, 6.2832); g.fill(); }
+  // franja de eco
+  g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(0, y1, W, H - y1);
+  g.fillStyle = 'rgba(120,200,255,.28)'; g.fillRect(0, y1, fx * W, H - y1);
+  g.fillStyle = '#fff'; g.textAlign = 'left'; g.font = `600 ${u * .03}px system-ui`; g.fillText('ECO', 14, y1 + (H - y1) * .6); g.font = `${u * .02}px system-ui`; g.globalAlpha = .6; g.fillText('mano a la derecha = más eco', 14 + u * .1, y1 + (H - y1) * .6); g.globalAlpha = 1;
+  // manos y marcas
+  const pts = manos.slice(); if (pointer) pts.push(pointer);
+  for (const p of pts){ g.strokeStyle = '#fff'; g.lineWidth = 3; g.beginPath(); g.arc(p.x * W, p.y * H, u * .035, 0, 6.2832); g.stroke(); g.fillStyle = 'rgba(255,255,255,.35)'; g.fill(); }
+  for (const m of marcas){ const hue = TR[m.id].hue; g.strokeStyle = `hsl(${hue},95%,65%)`; g.lineWidth = 3; g.beginPath(); m.quad.forEach((p, i) => i ? g.lineTo(p.x * W, p.y * H) : g.moveTo(p.x * W, p.y * H)); g.closePath(); g.stroke(); }
+}
+function tick(now){
+  requestAnimationFrame(tick); fr++; if (now - fpsT > 1000){ fps = fr; fr = 0; fpsT = now; }
+  pasoManos(); pasoMov(); pasoMarcas(); combinar(now);
+  if (ac){ while (uiQ.length && uiQ[0].t <= ac.currentTime){ const q = uiQ.shift(); cur = q.s; q.hits.forEach((h, i) => { if (h) trk[i].flash = 1; }); } }
+  dibujar(now);
+  if (hud.style.display === 'block') hud.textContent = `fps ${fps}\nmanos ${manos.length}  marcas ${marcas.length}\nmov ${colMov.map(v => v.toFixed(2)).join(' ')}\nenergía ${energia.toFixed(2)}\n` + (handLm ? 'manos: ok' : 'manos: no cargó');
+}
+
+/* ================= CONTROLES Y ARRANQUE ================= */
+$('bModo').addEventListener('click', () => { modoFijar = !modoFijar; $('bModo').textContent = 'Modo: ' + (modoFijar ? 'fijar' : 'mantener'); trk.forEach(t => { t.on = false; }); });
+$('bCamVer').addEventListener('click', () => { camTenue = !camTenue; $('bCamVer').textContent = 'Cámara: ' + (camTenue ? 'tenue' : 'oculta'); });
+$('bCam').addEventListener('click', async () => { const f = facing; facing = facing === 'user' ? 'environment' : 'user'; try { await iniciarCamara(); } catch(e){ facing = f; } });
+$('bPausa').addEventListener('click', () => { running = !running; $('bPausa').textContent = running ? 'Pausa' : 'Seguir'; });
+$('bOjo').addEventListener('click', () => { hud.style.display = hud.style.display === 'block' ? 'none' : 'block'; });
+$('btn').addEventListener('click', async () => {
+  $('btn').disabled = true; estado.textContent = 'Iniciando audio…';
+  audioInit(); try { await ac.resume(); } catch(e){} desbloquearIOS();
+  estado.textContent = 'Abriendo cámara…';
+  try { await iniciarCamara(); } catch(e){ estado.textContent = 'Sin cámara: podés tocar la pantalla con el dedo.'; await new Promise(r => setTimeout(r, 1500)); }
+  if (camOk){ estado.textContent = 'Cargando detector de manos…'; try { await cargarManos(); } catch(e){ console.warn(e); estado.textContent = 'Las manos no cargaron: quedan movimiento, marcas y dedo.'; await new Promise(r => setTimeout(r, 1500)); } }
+  try { await document.documentElement.requestFullscreen?.(); } catch(e){}
+  $('inicio').remove(); $('chips').style.display = 'flex'; resize();
+});
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

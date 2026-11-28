@@ -1,0 +1,5 @@
+GARRA - prototipo
+1) Subir la carpeta "garra" al repo ar-prueba.
+2) Abrir en la pantalla (notebook/PC/proyector): https://elzibe-prog.github.io/ar-prueba/garra/index.html
+3) Escanear el QR con el celular para jugar. Sin celular: Enter = jugar, flechas = mover, espacio = bajar.
+Nota: PeerJS usa su servidor publico gratuito (solo para prototipo).

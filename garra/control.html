@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>GARRA · CONTROL</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+  html,body{margin:0;height:100%;overflow:hidden;background:#120a2a;color:#fff;font-family:system-ui,sans-serif;touch-action:none}
+  #app{height:100%;display:flex;flex-direction:column;padding:14px;gap:12px}
+  #top{text-align:center}
+  #titulo{font-size:22px;font-weight:800}
+  #estado{font-size:15px;opacity:.8;margin-top:4px;min-height:22px}
+  #tiempo{font-size:44px;font-weight:900;color:#ffd60a;min-height:52px}
+  #zona{flex:1;display:flex;align-items:center;justify-content:center;position:relative;min-height:0}
+  #base{width:min(62vw,280px);height:min(62vw,280px);border-radius:50%;background:radial-gradient(#2b1a66,#1b1040);border:3px solid #7a2cff;position:relative;touch-action:none}
+  #knob{position:absolute;width:42%;height:42%;border-radius:50%;background:radial-gradient(#ff7ac0,#ff4fa3);left:29%;top:29%;box-shadow:0 6px 16px #000a}
+  #bajar{height:92px;border:0;border-radius:20px;font-size:30px;font-weight:900;color:#1a0b3a;background:linear-gradient(90deg,#ffd60a,#ff9f1c);box-shadow:0 6px 0 #a56a00}
+  #bajar:active{transform:translateY(4px);box-shadow:0 2px 0 #a56a00}
+  #bajar:disabled,#base.off{opacity:.3}
+  #tilt{background:none;border:1px solid #fff5;color:#fff;border-radius:10px;padding:8px;font-size:13px}
+  #premio{display:none;text-align:center;font-size:20px}
+  #premio b{display:block;font-size:40px;color:#7dffb3;letter-spacing:.06em;margin:8px 0}
+</style>
+<script src="peerjs.min.js"></script>
+</head>
+<body>
+<div id="app">
+  <div id="top"><div id="titulo">GARRA</div><div id="estado">Conectando…</div><div id="tiempo"></div></div>
+  <div id="premio"></div>
+  <div id="zona"><div id="base" class="off"><div id="knob"></div></div></div>
+  <button id="tilt">Usar inclinación del celular</button>
+  <button id="bajar" disabled>BAJAR</button>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search), target = params.get('id');
+let conn = null, myTurn = false, vx = 0, vz = 0, useTilt = false, lastSent = 0;
+const vib = n => { try { navigator.vibrate && navigator.vibrate(n); } catch(e){} };
+const set = (t) => $('estado').textContent = t;
+function sendMv(force){ const n = performance.now(); if (!force && n - lastSent < 50) return; lastSent = n; if (conn && conn.open) conn.send({t:'mv', x:+vx.toFixed(2), z:+vz.toFixed(2)}); }
+function playable(on){ myTurn = on; $('bajar').disabled = !on; $('base').classList.toggle('off', !on); if (!on){ vx = vz = 0; $('knob').style.left = $('knob').style.top = '29%'; } }
+
+if (!target){ set('Falta el código. Escaneá el QR de la pantalla.'); }
+else {
+  const peer = new Peer();
+  peer.on('open', () => {
+    conn = peer.connect(target, {reliable:true});
+    conn.on('open', () => set('Conectado · esperando turno'));
+    conn.on('data', d => {
+      if (d.t === 'hello'){ $('titulo').textContent = d.name; }
+      else if (d.t === 'queue'){ if (d.pos === 0) return; playable(false); $('tiempo').textContent = ''; set(d.pos === 1 ? 'Sos el próximo' : 'Tu turno en ' + d.pos + ' jugadas'); }
+      else if (d.t === 'turn'){ $('premio').style.display = 'none'; playable(true); set('¡Tu turno! Movés y bajás'); $('tiempo').textContent = d.time; vib([200, 80, 200]); }
+      else if (d.t === 'time'){ $('tiempo').textContent = Math.max(0, d.s); }
+      else if (d.t === 'dropping'){ playable(false); $('tiempo').textContent = ''; set('Bajando la garra…'); }
+      else if (d.t === 'result'){
+        playable(false);
+        if (d.win){ set('¡GANASTE!'); vib([300, 100, 300, 100, 500]); const p = $('premio'); p.style.display = 'block'; p.innerHTML = 'Tu código de premio<b>' + d.code + '</b>Mostralo en el stand'; }
+        else { set('Casi… volvés a la cola'); vib(200); }
+      }
+    });
+    conn.on('close', () => { set('Desconectado. Recargá para volver a entrar.'); playable(false); });
+  });
+  peer.on('error', e => set('Error de conexión (' + e.type + ')'));
+}
+
+/* joystick */
+const base = $('base'), knob = $('knob'); let active = null;
+function joy(e){ const r = base.getBoundingClientRect(), R = r.width / 2; let dx = e.clientX - (r.left + R), dz = e.clientY - (r.top + R); const d = Math.hypot(dx, dz), k = d > R ? R / d : 1; dx *= k; dz *= k;
+  knob.style.left = (50 + dx / r.width * 100 - 21) + '%'; knob.style.top = (50 + dz / r.height * 100 - 21) + '%';
+  vx = dx / R; vz = dz / R; if (Math.hypot(vx, vz) < .12) vx = vz = 0; sendMv(); }
+base.addEventListener('pointerdown', e => { if (!myTurn || useTilt) return; active = e.pointerId; base.setPointerCapture(e.pointerId); joy(e); });
+base.addEventListener('pointermove', e => { if (e.pointerId === active) joy(e); });
+const end = e => { if (e.pointerId !== active) return; active = null; vx = vz = 0; knob.style.left = knob.style.top = '29%'; sendMv(true); };
+base.addEventListener('pointerup', end); base.addEventListener('pointercancel', end);
+
+$('bajar').addEventListener('click', () => { if (!myTurn) return; vib(60); if (conn && conn.open) conn.send({t:'drop'}); playable(false); });
+
+/* inclinación */
+$('tilt').addEventListener('click', async () => {
+  if (useTilt){ useTilt = false; $('tilt').textContent = 'Usar inclinación del celular'; vx = vz = 0; sendMv(true); return; }
+  try { if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission){ const r = await DeviceOrientationEvent.requestPermission(); if (r !== 'granted') return; }
+    useTilt = true; $('tilt').textContent = 'Volver al joystick'; } catch(e){ set('No se pudo activar la inclinación'); }
+});
+addEventListener('deviceorientation', e => { if (!useTilt || !myTurn) return; const g = clamp((e.gamma || 0) / 30), b = clamp(((e.beta || 0) - 40) / 30);
+  vx = Math.abs(g) < .15 ? 0 : g; vz = Math.abs(b) < .15 ? 0 : b; knob.style.left = (50 + vx * 29 - 21) + '%'; knob.style.top = (50 + vz * 29 - 21) + '%'; sendMv(); });
+function clamp(v){ return Math.max(-1, Math.min(1, v)); }
+</script>
+</body>
+</html>

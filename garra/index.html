@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GARRA · PANTALLA</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0d0820;font-family:system-ui,sans-serif;color:#fff}
+  canvas#c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  .hud{position:fixed;z-index:5;text-shadow:0 2px 6px #000a;pointer-events:none}
+  #turno{top:14px;left:0;right:0;text-align:center;font-size:clamp(16px,2.4vw,30px);font-weight:700;letter-spacing:.04em}
+  #sub{top:calc(14px + clamp(16px,2.4vw,30px) + 8px);left:0;right:0;text-align:center;font-size:clamp(12px,1.4vw,18px);opacity:.75}
+  #cola{top:14px;right:18px;text-align:right;font-size:clamp(13px,1.6vw,20px)}
+  #premios{top:14px;left:18px;font-size:clamp(13px,1.6vw,20px)}
+  #qrbox{bottom:18px;left:18px;display:flex;gap:12px;align-items:center;background:#000a;padding:10px 14px;border-radius:14px;pointer-events:auto}
+  #qr{width:clamp(90px,12vw,170px);height:clamp(90px,12vw,170px);background:#fff;padding:6px;border-radius:8px;box-sizing:border-box;display:flex;align-items:center;justify-content:center}
+  #qr svg{width:100%;height:100%}
+  #qrtxt{font-size:clamp(12px,1.4vw,18px);line-height:1.35;max-width:220px}
+  #qrtxt b{font-size:clamp(15px,1.9vw,24px);display:block;margin-bottom:4px}
+  #qrtxt small{opacity:.6;word-break:break-all;font-size:10px}
+  #msg{top:38%;left:0;right:0;text-align:center;font-size:clamp(32px,7vw,96px);font-weight:900;letter-spacing:.04em;opacity:0;transition:opacity .25s;
+    background:linear-gradient(90deg,#ffd60a,#ff4fa3,#6ee7ff);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:none;filter:drop-shadow(0 4px 12px #000a)}
+  #msg.on{opacity:1}
+  #estado{bottom:18px;right:18px;font-size:12px;opacity:.6}
+  #ayuda{bottom:18px;left:50%;transform:translateX(-50%);font-size:12px;opacity:.55;text-align:center}
+</style>
+<script src="qrcode.js"></script>
+<script src="peerjs.min.js"></script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud" id="turno">Escaneá el QR y jugá</div>
+<div class="hud" id="sub"></div>
+<div class="hud" id="premios">Premios: 0</div>
+<div class="hud" id="cola"></div>
+<div class="hud" id="qrbox"><div id="qr"></div><div id="qrtxt"><b>Escaneá para jugar</b>Con la cámara de tu celular<br><small id="url"></small></div></div>
+<div class="hud" id="msg"></div>
+<div class="hud" id="estado">Conectando…</div>
+<div class="hud" id="ayuda">Probar sin celular: Enter = jugar con teclado · flechas o WASD = mover · espacio = bajar la garra</div>
+
+<script type="module">
+import * as THREE from 'three';
+import * as CANNON from './cannon-es.js';
+const $ = id => document.getElementById(id);
+
+/* ======== constantes ======== */
+const BX = 4.5, BZ = 3.0, TOP = 7.2, HEAD_MIN = 1.3;
+const CHUTE = {x:3.3, z:2.0, r:1.1}, HOME = {x:-3.2, z:-2.0};
+const TURN_TIME = 25, SPEED = 3.4, N_TOYS = 16;
+const rnd = (a, b) => a + Math.random() * (b - a), clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const approach = (v, t, d) => v < t ? Math.min(t, v + d) : Math.max(t, v - d);
+
+/* ======== escena ======== */
+const renderer = new THREE.WebGLRenderer({canvas:$('c'), antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x120a2a); scene.fog = new THREE.Fog(0x120a2a, 28, 60);
+const camera = new THREE.PerspectiveCamera(38, 1, .1, 100);
+function resize(){ renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  const k = Math.max(1, 1.55 / camera.aspect); camera.position.set(0, 6.4 + (k - 1) * 3, 21 * k); camera.lookAt(0, 3.7, 0); }
+addEventListener('resize', resize);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x4a3a88, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5); sun.position.set(3, 12, 9); sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024); Object.assign(sun.shadow.camera, {left:-8, right:8, top:9, bottom:-3, near:1, far:30}); scene.add(sun);
+for (const [c, x] of [[0xff4fa3, -4], [0x4fd9ff, 4]]){ const l = new THREE.PointLight(c, 28, 16); l.position.set(x, 6.5, 1); scene.add(l); }
+
+const M = (c, o = {}) => new THREE.MeshStandardMaterial({color:c, roughness:.6, metalness:.05, ...o});
+function box(w, h, d, mat, x, y, z, parent = scene){ const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; parent.add(m); return m; }
+
+/* gabinete */
+box(2*BX + .6, 1.4, 2*BZ + .6, M(0x1d1240), 0, -.7, 0);                       // piso
+box(2*BX + 1.6, 3.2, 2*BZ + 1.6, M(0x7a2cff), 0, -3.0, 0);                     // base
+for (const sx of [-1, 1]) for (const sz of [-1, 1]) box(.3, TOP + 1.6, .3, M(0xff4fa3), sx * (BX + .25), (TOP + 1.6) / 2 - .1, sz * (BZ + .25));
+box(2*BX + .8, .3, .3, M(0xff4fa3), 0, TOP + 1.45, BZ + .25); box(2*BX + .8, .3, .3, M(0xff4fa3), 0, TOP + 1.45, -BZ - .25);
+box(2*BX + .6, TOP + 1.6, .2, M(0x2b1a66), 0, (TOP + 1.6) / 2 - .1, -BZ - .35);  // fondo
+const glass = new THREE.MeshPhysicalMaterial({color:0x9fd8ff, transparent:true, opacity:.09, roughness:.05, side:THREE.DoubleSide, depthWrite:false});
+const gf = new THREE.Mesh(new THREE.PlaneGeometry(2*BX + .6, TOP + 1.3), glass); gf.position.set(0, (TOP + 1.3) / 2, BZ + .25); scene.add(gf);
+for (const s of [-1, 1]){ const g = new THREE.Mesh(new THREE.PlaneGeometry(2*BZ + .6, TOP + 1.3), glass); g.rotation.y = Math.PI / 2; g.position.set(s * (BX + .25), (TOP + 1.3) / 2, 0); scene.add(g); }
+// cartel
+{ const c = document.createElement('canvas'); c.width = 1024; c.height = 200; const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, 1024, 0); g.addColorStop(0, '#ff4fa3'); g.addColorStop(.5, '#ffd60a'); g.addColorStop(1, '#4fd9ff');
+  x.fillStyle = '#16093a'; x.fillRect(0, 0, 1024, 200); x.fillStyle = g; x.font = '900 130px system-ui'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('GARRA', 512, 105);
+  const t = new THREE.CanvasTexture(c); const m = new THREE.Mesh(new THREE.BoxGeometry(2*BX + .8, 1.5, .4), [M(0x16093a), M(0x16093a), M(0x16093a), M(0x16093a), new THREE.MeshBasicMaterial({map:t}), M(0x16093a)]);
+  m.position.set(0, TOP + 2.35, BZ + .2); scene.add(m); }
+// bandeja de premios
+const tray = new THREE.Mesh(new THREE.CylinderGeometry(CHUTE.r, CHUTE.r, .06, 40), new THREE.MeshStandardMaterial({color:0x00e676, emissive:0x00a050, transparent:true, opacity:.55}));
+tray.position.set(CHUTE.x, .03, CHUTE.z); scene.add(tray);
+const trayRing = new THREE.Mesh(new THREE.TorusGeometry(CHUTE.r, .05, 10, 48), new THREE.MeshBasicMaterial({color:0x7dffb3})); trayRing.rotation.x = Math.PI / 2; trayRing.position.set(CHUTE.x, .07, CHUTE.z); scene.add(trayRing);
+
+/* ======== física ======== */
+const world = new CANNON.World({gravity:new CANNON.Vec3(0, -24, 0)});
+const mat = new CANNON.Material('toy'); world.defaultContactMaterial = new CANNON.ContactMaterial(mat, mat, {friction:.45, restitution:.18}); world.defaultMaterial = mat;
+const floor = new CANNON.Body({mass:0, shape:new CANNON.Plane(), material:mat}); floor.quaternion.setFromEuler(-Math.PI / 2, 0, 0); world.addBody(floor);
+for (const [hx, hy, hz, x, z] of [[.5, 6, BZ + 1, -BX - .5, 0], [.5, 6, BZ + 1, BX + .5, 0], [BX + 1, 6, .5, 0, -BZ - .5], [BX + 1, 6, .5, 0, BZ + .5]]){
+  const b = new CANNON.Body({mass:0, shape:new CANNON.Box(new CANNON.Vec3(hx, hy, hz)), material:mat}); b.position.set(x, hy, z); world.addBody(b); }
+
+/* ======== peluches ======== */
+const PAL = [0xff5a8a, 0xffbe0b, 0x2ec4b6, 0x8338ec, 0x3a86ff, 0xef476f, 0xff9f1c, 0x06d6a0, 0xf15bb5, 0x00bbf9];
+const toys = [];
+function crearToy(x, y, z){
+  const r = rnd(.38, .56), col = PAL[Math.floor(Math.random() * PAL.length)];
+  const g = new THREE.Group(); const body = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 18), M(col, {roughness:.85})); body.castShadow = true; g.add(body);
+  const tipo = Math.floor(Math.random() * 4);
+  if (tipo === 0) for (const s of [-1, 1]){ const e = new THREE.Mesh(new THREE.SphereGeometry(r * .32, 12, 10), M(col, {roughness:.85})); e.position.set(s * r * .62, r * .82, 0); g.add(e); }
+  if (tipo === 1) for (const s of [-1, 1]){ const h = new THREE.Mesh(new THREE.ConeGeometry(r * .2, r * .5, 10), M(0xffd60a)); h.position.set(s * r * .5, r * .9, 0); h.rotation.z = -s * .3; g.add(h); }
+  if (tipo === 2){ const h = new THREE.Mesh(new THREE.ConeGeometry(r * .45, r * .8, 14), M(0x00bbf9)); h.position.set(0, r * 1.05, 0); g.add(h); }
+  for (const s of [-1, 1]){ const w = new THREE.Mesh(new THREE.SphereGeometry(r * .2, 12, 10), M(0xffffff)); w.position.set(s * r * .36, r * .18, r * .86); g.add(w);
+    const p = new THREE.Mesh(new THREE.SphereGeometry(r * .1, 10, 8), M(0x111111)); p.position.set(s * r * .36, r * .18, r * 1.0); g.add(p); }
+  scene.add(g);
+  const b = new CANNON.Body({mass:r * r * r * 9, shape:new CANNON.Sphere(r), material:mat, linearDamping:.12, angularDamping:.35}); b.position.set(x, y, z); b.quaternion.setFromEuler(rnd(0, 6), rnd(0, 6), rnd(0, 6));
+  world.addBody(b); const t = {mesh:g, body:b, r, scale:1, dying:false}; toys.push(t); return t;
+}
+function posLibre(){ for (let i = 0; i < 30; i++){ const x = rnd(-BX + .7, BX - .7), z = rnd(-BZ + .7, BZ - .7); if (Math.hypot(x - CHUTE.x, z - CHUTE.z) > CHUTE.r + .9) return {x, z}; } return {x:-1, z:-1}; }
+for (let i = 0; i < N_TOYS; i++){ const p = posLibre(); crearToy(p.x, 1 + i * .6, p.z); }
+for (let i = 0; i < 360; i++) world.step(1 / 60);          // que se asienten antes de empezar
+
+/* ======== garra ======== */
+const clawG = new THREE.Group(); scene.add(clawG);
+const hub = new THREE.Mesh(new THREE.SphereGeometry(.26, 16, 12), M(0xdddddd, {metalness:.6, roughness:.35})); hub.castShadow = true; clawG.add(hub);
+const fingers = [];
+for (let i = 0; i < 3; i++){ const pivot = new THREE.Group(); pivot.rotation.y = i * Math.PI * 2 / 3; const arm = new THREE.Group(); arm.position.x = .22; pivot.add(arm);
+  const bar = box(.12, .95, .12, M(0xffd60a, {metalness:.4}), 0, -.48, 0, arm); const tip = box(.14, .14, .14, M(0xff4fa3), 0, -.98, 0, arm); clawG.add(pivot); fingers.push(arm); }
+const rod = new THREE.Mesh(new THREE.CylinderGeometry(.05, .05, 1, 8), M(0x999999, {metalness:.7})); scene.add(rod);
+const beam = box(2*BX + .6, .22, .26, M(0xcfcfe6, {metalness:.5}), 0, TOP + .3, 0); const carriage = box(.8, .4, .55, M(0xff4fa3), 0, TOP + .3, 0);
+for (const s of [-1, 1]) box(.22, .22, 2*BZ + .6, M(0xcfcfe6, {metalness:.5}), s * (BX + .15), TOP + .3, 0);
+const claw = {x:HOME.x, z:HOME.z, y:TOP, open:1, state:'idle', t:0, held:[]};
+const clawBody = new CANNON.Body({mass:0, type:CANNON.Body.KINEMATIC, shape:new CANNON.Sphere(.2)}); clawBody.collisionFilterMask = 0; world.addBody(clawBody);
+function moveToward(tx, tz, speed, dt){ const dx = tx - claw.x, dz = tz - claw.z, d = Math.hypot(dx, dz); if (d <= speed * dt){ claw.x = tx; claw.z = tz; return true; } claw.x += dx / d * speed * dt; claw.z += dz / d * speed * dt; return false; }
+function grab(){
+  const c = toys.filter(t => !t.dying).map(t => ({t, d:Math.hypot(t.body.position.x - claw.x, t.body.position.z - claw.z), dy:t.body.position.y - claw.y}))
+    .filter(o => o.d < .95 && o.dy > -1.2 && o.dy < .8).sort((a, b) => a.d - b.d).slice(0, 2);
+  for (const o of c){ const p = clamp(1.2 - o.d / .9, .1, .95); if (Math.random() > p) continue;
+    const con = new CANNON.PointToPointConstraint(clawBody, new CANNON.Vec3(0, -.5, 0), o.t.body, new CANNON.Vec3(0, o.t.r * .7, 0)); con.collideConnected = false; world.addConstraint(con);
+    claw.held.push({t:o.t, con, s:rnd(.35, .92)}); }
+}
+function slipCheck(dt){ for (let i = claw.held.length - 1; i >= 0; i--){ const h = claw.held[i]; if (Math.random() < (1 - h.s) * 1.1 * dt){ world.removeConstraint(h.con); claw.held.splice(i, 1); } } }
+function release(){ for (const h of claw.held) world.removeConstraint(h.con); claw.held = []; }
+function evaluar(){
+  let n = 0;
+  for (const t of toys){ if (t.dying) continue; const p = t.body.position;
+    if (Math.hypot(p.x - CHUTE.x, p.z - CHUTE.z) < CHUTE.r && p.y < 1.4 && t.body.velocity.length() < 2.5){ t.dying = true; n++; } }
+  return n;
+}
+let input = {x:0, z:0};
+function stepClaw(dt){
+  switch (claw.state){
+    case 'idle': claw.x = clamp(claw.x + input.x * SPEED * dt, -BX + .7, BX - .7); claw.z = clamp(claw.z + input.z * SPEED * dt, -BZ + .7, BZ - .7); claw.open = approach(claw.open, 1, dt * 3); break;
+    case 'down': claw.y -= 5.5 * dt; claw.open = approach(claw.open, 1, dt * 4); if (claw.y <= HEAD_MIN){ claw.y = HEAD_MIN; claw.state = 'closing'; claw.t = 0; } break;
+    case 'closing': claw.t += dt; claw.open = Math.max(0, 1 - claw.t / .7); if (claw.t >= .8){ grab(); claw.state = 'up'; } break;
+    case 'up': claw.y += 4.4 * dt; slipCheck(dt); if (claw.y >= TOP){ claw.y = TOP; claw.state = 'moving'; } break;
+    case 'moving': slipCheck(dt); if (moveToward(CHUTE.x, CHUTE.z, 3.6, dt)){ claw.state = 'opening'; claw.t = 0; } break;
+    case 'opening': claw.t += dt; claw.open = Math.min(1, claw.t / .5); if (claw.t >= .5){ release(); claw.state = 'settle'; claw.t = 0; } break;
+    case 'settle': claw.t += dt; if (claw.t >= 2.6){ const n = evaluar(); claw.state = 'return'; onResultado(n); } break;
+    case 'return': if (moveToward(HOME.x, HOME.z, 5, dt)) claw.state = 'idle'; break;
+  }
+  const px = clawBody.position.x, py = clawBody.position.y, pz = clawBody.position.z, ny = claw.y - .25;
+  clawBody.velocity.set((claw.x - px) / dt, (ny - py) / dt, (claw.z - pz) / dt); clawBody.position.set(claw.x, ny, claw.z);
+}
+function dibujarGarra(){
+  clawG.position.set(claw.x, claw.y, claw.z); const ang = -.28 + claw.open * 1.08; fingers.forEach(a => { a.rotation.z = ang; });
+  beam.position.z = claw.z; carriage.position.set(claw.x, TOP + .3, claw.z);
+  const len = TOP + .3 - claw.y; rod.scale.set(1, len, 1); rod.position.set(claw.x, claw.y + len / 2, claw.z);
+}
+
+/* ======== juego: turnos ======== */
+let players = [], current = null, gstate = 'attract', turnT = TURN_TIME, counter = 0, premios = 0, peer = null, msgTimer = 0;
+const keys = {};
+const send = (p, o) => { try { p.conn && p.conn.open && p.conn.send(o); } catch(e){} };
+function showMsg(t, ms = 2200){ const m = $('msg'); m.textContent = t; m.classList.add('on'); clearTimeout(msgTimer); msgTimer = setTimeout(() => m.classList.remove('on'), ms); }
+function hud(){
+  const jug = current && gstate !== 'attract';
+  $('turno').textContent = jug ? ('Juega: ' + current.name + (gstate === 'playing' ? ' · ' + Math.max(0, turnT) + ' s' : '')) : 'Escaneá el QR y jugá';
+  $('sub').textContent = jug && gstate === 'playing' ? 'Mové la garra con el joystick y tocá BAJAR' : '';
+  $('cola').textContent = players.length > 1 ? 'En cola: ' + (players.length - 1) : (players.length ? '' : 'Sin jugadores');
+  $('premios').textContent = 'Premios: ' + premios;
+  $('qrbox').style.opacity = players.length > 1 || (players.length === 1 && gstate !== 'attract') ? .55 : 1;
+}
+function broadcastQueue(){ players.forEach((p, i) => send(p, {t:'queue', pos:i, name:p.name})); hud(); }
+function nextTurn(){
+  players = players.filter(p => !p.gone);
+  if (!players.length){ gstate = 'attract'; current = null; input = {x:0, z:0}; hud(); return; }
+  current = players[0]; gstate = 'playing'; turnT = TURN_TIME; input = {x:0, z:0}; send(current, {t:'turn', time:TURN_TIME}); broadcastQueue();
+}
+function startDrop(){ if (gstate !== 'playing' || claw.state !== 'idle') return; gstate = 'dropping'; input = {x:0, z:0}; send(current, {t:'dropping'}); claw.state = 'down'; hud(); }
+function onResultado(n){
+  const p = current; let code = null;
+  if (n > 0){ premios += n; code = 'GARRA-' + Math.random().toString(36).slice(2, 6).toUpperCase(); showMsg('¡PREMIO!', 2800); } else showMsg('¡Casi!', 2000);
+  if (p) send(p, {t:'result', win:n > 0, code});
+  gstate = 'result'; hud();
+  setTimeout(() => { if (p && players.includes(p)){ players = players.filter(x => x !== p); players.push(p); } nextTurn(); }, 3200);
+}
+setInterval(() => { if (gstate === 'playing'){ turnT--; if (current) send(current, {t:'time', s:turnT}); hud(); if (turnT <= 0) startDrop(); } }, 1000);
+
+/* limpieza de premios entregados y reposición */
+function actualizarToys(dt){
+  for (let i = toys.length - 1; i >= 0; i--){ const t = toys[i];
+    if (t.dying){ t.scale -= dt * 2.5; t.mesh.scale.setScalar(Math.max(.001, t.scale)); if (t.scale <= .02){ scene.remove(t.mesh); world.removeBody(t.body); toys.splice(i, 1); const p = posLibre(); crearToy(p.x, TOP - 1, p.z); } }
+    t.mesh.position.copy(t.body.position); t.mesh.quaternion.copy(t.body.quaternion); }
+}
+
+/* ======== conexión con los celulares ======== */
+function onConn(conn){
+  const p = {conn, name:'Jugador ' + (++counter), id:conn.peer, gone:false};
+  conn.on('open', () => { players.push(p); send(p, {t:'hello', name:p.name}); if (gstate === 'attract') nextTurn(); else broadcastQueue(); });
+  conn.on('data', d => { if (!d) return;
+    if (d.t === 'mv' && p === current && gstate === 'playing'){ input = {x:clamp(+d.x || 0, -1, 1), z:clamp(+d.z || 0, -1, 1)}; }
+    else if (d.t === 'drop' && p === current) startDrop(); });
+  const bye = () => { p.gone = true; const was = current === p; players = players.filter(x => x !== p); if (was && gstate === 'playing'){ nextTurn(); } else broadcastQueue(); };
+  conn.on('close', bye); conn.on('error', bye);
+}
+function iniciarPeer(){
+  const id = 'garra-' + Math.random().toString(36).slice(2, 6);
+  try { peer = new Peer(id); } catch(e){ $('estado').textContent = 'No cargó PeerJS'; return; }
+  peer.on('open', pid => {
+    const url = new URL('control.html?id=' + pid, location.href).href; $('url').textContent = url;
+    try { const qr = qrcode(0, 'M'); qr.addData(url); qr.make(); $('qr').innerHTML = qr.createSvgTag(4, 0); } catch(e){ $('qr').textContent = 'QR'; }
+    $('estado').textContent = 'Listo · ' + pid;
+  });
+  peer.on('connection', onConn);
+  peer.on('error', e => { if (e.type === 'unavailable-id') iniciarPeer(); else $('estado').textContent = 'Sin conexión (' + e.type + '). Revisá internet.'; });
+  peer.on('disconnected', () => { $('estado').textContent = 'Reconectando…'; try { peer.reconnect(); } catch(e){} });
+}
+iniciarPeer();
+
+/* ======== teclado para probar sin celular ======== */
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Enter' && !players.some(p => p.local)){ const p = {local:true, name:'Teclado', gone:false}; players.push(p); if (gstate === 'attract') nextTurn(); else broadcastQueue(); }
+  if (e.code === 'Space'){ e.preventDefault(); if (current && current.local) startDrop(); }
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+
+/* ======== loop ======== */
+let last = performance.now();
+function tick(now){
+  requestAnimationFrame(tick);
+  const dt = Math.min(.05, (now - last) / 1000) || .016; last = now;
+  if (current && current.local && gstate === 'playing') input = {x:(keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0), z:(keys.ArrowDown || keys.KeyS ? 1 : 0) - (keys.ArrowUp || keys.KeyW ? 1 : 0)};
+  if (gstate === 'attract' && claw.state === 'idle'){ claw.x = Math.sin(now / 1800) * (BX - 1.2); claw.z = Math.cos(now / 2300) * (BZ - 1.2); }
+  stepClaw(dt); world.step(1 / 60, dt, 4); actualizarToys(dt); dibujarGarra();
+  const pulse = .5 + .5 * Math.sin(now / 300); tray.material.opacity = .4 + pulse * .25;
+  renderer.render(scene, camera);
+}
+resize(); hud(); requestAnimationFrame(tick);
+</script>
+</body>
+</html>
